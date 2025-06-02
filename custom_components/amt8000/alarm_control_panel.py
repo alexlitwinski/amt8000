@@ -70,11 +70,9 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
             partitions = self.status["partitions"]
             if self.partition in partitions:
                 partition_data = partitions[self.partition]
-                LOGGER.debug(f"Partition {self.partition} data: {partition_data}")
+                LOGGER.debug(f"Partition {self.partition}: enabled={partition_data.get('enabled')}, armed={partition_data.get('armed')}, stay={partition_data.get('stay')}")
             else:
-                LOGGER.warning(f"Partition {self.partition} not found in data. Available partitions: {list(partitions.keys())}")
-        else:
-            LOGGER.warning(f"No partitions data received. Status keys: {list(self.status.keys()) if self.status else 'None'}")
+                LOGGER.warning(f"Partition {self.partition} not found in payload data")
         
         self.async_write_ha_state()
 
@@ -119,8 +117,15 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         
         partitions = self.status.get("partitions", {})
         partition_data = partitions.get(self.partition, {})
-        # Partition is available if it's enabled in the system
-        return partition_data.get("enabled", False)
+        
+        # For debugging - temporarily make all partitions available
+        # Later we can add logic to check if partition is actually configured
+        available = partition_data.get("enabled", True)  # Default to True for now
+        
+        if not available:
+            LOGGER.debug(f"Partition {self.partition} marked as unavailable - enabled: {partition_data.get('enabled', 'missing')}")
+        
+        return available
 
     def _arm_away(self):
         """Arm partition in away mode"""
