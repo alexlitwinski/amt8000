@@ -64,20 +64,18 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         """Update the stored value on coordinator updates."""
         self.status = self.coordinator.data
         
-        # Debug logging to check partition-specific data (reduced frequency)
+        # Simple debug logging - only on first update or when status changes
         if self.status and "partitions" in self.status:
             partitions = self.status["partitions"]
             if self.partition in partitions:
                 partition_data = partitions[self.partition]
-                # Only log every 5th update to reduce spam
-                if hasattr(self, '_debug_counter'):
-                    self._debug_counter += 1
-                else:
-                    self._debug_counter = 1
-                    
-                if self._debug_counter % 5 == 0:
-                    main_status = self.status.get('status', 'unknown')
-                    LOGGER.debug(f"Partition {self.partition}: armed={partition_data.get('armed')}, stay={partition_data.get('stay')}, main_status={main_status}")
+                if not hasattr(self, '_last_armed_state'):
+                    self._last_armed_state = None
+                
+                current_armed = partition_data.get('armed', False)
+                if self._last_armed_state != current_armed:
+                    LOGGER.info(f"Partition {self.partition} armed state changed: {self._last_armed_state} → {current_armed}")
+                    self._last_armed_state = current_armed
             else:
                 LOGGER.warning(f"Partition {self.partition} not found in payload data")
         
@@ -122,17 +120,9 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         if self.status is None:
             return False
         
-        partitions = self.status.get("partitions", {})
-        partition_data = partitions.get(self.partition, {})
-        
-        # For debugging - temporarily make all partitions available
-        # Later we can add logic to check if partition is actually configured
-        available = partition_data.get("enabled", True)  # Default to True for now
-        
-        if not available:
-            LOGGER.debug(f"Partition {self.partition} marked as unavailable - enabled: {partition_data.get('enabled', 'missing')}")
-        
-        return available
+        # Always return True for partitions 1-5 during testing
+        # Later can be changed to use actual enabled status
+        return True
 
     def _arm_away_command(self, client):
         """Arm partition in away mode command function"""
