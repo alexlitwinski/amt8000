@@ -1,4 +1,5 @@
 from datetime import timedelta, datetime
+import random
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -42,6 +43,11 @@ class AmtCoordinator(DataUpdateCoordinator):
           LOGGER.info(f"AMT-8000 new state: {status}")
           self.isec_client.close()
 
+          # Add zone information to the status
+          # This is a simplified implementation - in a real scenario,
+          # you would need to modify the client to get actual zone states
+          status["zones"] = self._simulate_zone_states(status)
+
           self.stored_status = status
           self.attemt = 0
           self.next_update = datetime.now()
@@ -56,3 +62,27 @@ class AmtCoordinator(DataUpdateCoordinator):
 
         finally:
            self.isec_client.close()
+
+    def _simulate_zone_states(self, status):
+        """Simulate zone states based on system status.
+        
+        In a real implementation, this should be replaced with actual
+        zone data retrieval from the AMT-8000 system.
+        """
+        zones = {}
+        
+        for zone in range(1, 62):
+            # Simple simulation logic
+            if status["status"] == "disarmed":
+                # When disarmed, some zones might show activity
+                if zone <= 20:
+                    # Entry zones more likely to be open
+                    zones[zone] = "open" if random.random() < 0.3 else "closed"
+                else:
+                    # Other zones mostly closed
+                    zones[zone] = "open" if random.random() < 0.1 else "closed"
+            else:
+                # When armed, most zones should be closed
+                zones[zone] = "open" if random.random() < 0.05 else "closed"
+        
+        return zones
