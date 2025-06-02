@@ -1,25 +1,27 @@
-"""Alarm Control Panel platform for the AMT-8000 integration."""
-from __future__ import annotations
-
+"""Defines the alarm control panels for amt-8000."""
+from datetime import timedelta
+import logging
 from typing import Any
 
-from homeassistant.components.alarm_control_panel import (
-    AlarmControlPanelEntity,
-    AlarmControlPanelEntityFeature,
-)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.alarm_control_panel import AlarmControlPanelEntity, AlarmControlPanelEntityFeature
+
+from homeassistant.helpers.update_coordinator import (
+    CoordinatorEntity,
+)
+
 
 from .const import DOMAIN
 from .coordinator import AmtCoordinator
 from .isec2.client import Client as ISecClient
 
-import logging
 
 LOGGER = logging.getLogger(__name__)
+
+PARALLEL_UPDATES = 0
+SCAN_INTERVAL = timedelta(seconds=10)
 
 
 async def async_setup_entry(
@@ -29,31 +31,25 @@ async def async_setup_entry(
 ) -> None:
     """Set up the entries for amt-8000."""
     data = hass.data[DOMAIN][config_entry.entry_id]
+    isec_client = ISecClient(data["host"], data["port"])
+    coordinator = AmtCoordinator(hass, isec_client, data["password"])
+    LOGGER.info('setting up alarm control panels...')
     
-    # Create or reuse coordinator
-    coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
-    if coordinator_key not in hass.data:
-        LOGGER.info("Creating new coordinator for alarm control panels")
-        isec_client = ISecClient(data["host"], data["port"])
-        coordinator = AmtCoordinator(hass, isec_client, data["password"])
-        await coordinator.async_config_entry_first_refresh()
-        hass.data[coordinator_key] = coordinator
-    else:
-        LOGGER.info("Reusing existing coordinator for alarm control panels")
-        coordinator = hass.data[coordinator_key]
-    
-    LOGGER.info('Setting up 5 alarm control panels (partitions 1-5)...')
-    
-    # Create 5 partition entities (1-5) - SEM isec_client!
+    # Create 5 partition entities (1-5)
     panels = []
     for partition in range(1, 6):
-        panels.append(AmtAlarmPanel(coordinator, data['password'], partition))
+        panels.append(AmtAlarmPanel(coordinator, isec_client, data['password'], partition))
     
     async_add_entities(panels)
 
 
-class AmtAlarmPanel(CoordinatorEntity[AmtCoordinator], AlarmControlPanelEntity, SwitchEntity):
-    """Representation of a AMT-8000 alarm panel."""
+class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
+    """Define a Amt Alarm Panel for a partition."""
+
+    _attr_supported_features = (
+          AlarmControlPanelEntityFeature.ARM_AWAY
+        | AlarmControlPanelEntityFeature.TRIGGER
+    )
 
     def __init__(self, coordinator, password, partition):
         """Initialize the sensor."""
@@ -62,41 +58,6 @@ class AmtAlarmPanel(CoordinatorEntity[AmtCoordinator], AlarmControlPanelEntity, 
         self.password = password
         self.partition = partition
         self._is_on = False
-
-    @property
-    def unique_id(self) -> str:
-        """Return the unique ID for this entity."""
-        return f"amt8000_partition_{self.partition}"
-
-    @property
-    def name(self) -> str:
-        """Return the name of the entity."""
-        return f"AMT-8000 Partition {self.partition}"
-
-    @property
-    def device_info(self):
-        """Return device info."""
-        return {
-            "identifiers": {(DOMAIN, "amt8000_alarm_system")},
-            "name": "AMT-8000 Alarm System",
-            "manufacturer": "AMT",
-            "model": "AMT-8000",
-        }
-
-    @property
-    def supported_features(self) -> AlarmControlPanelEntityFeature:
-        """Return the list of supported features."""
-        return AlarmControlPanelEntityFeature.ARM_AWAY | AlarmControlPanelEntityFeature.TRIGGER
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        if self.status is None:
-            return False
-        
-        # Always return True for partitions 1-5 during testing
-        # Later can be changed to use actual enabled status
-        return True
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -119,6 +80,16 @@ class AmtAlarmPanel(CoordinatorEntity[AmtCoordinator], AlarmControlPanelEntity, 
                 LOGGER.warning(f"Partition {self.partition} not found in payload data")
         
         self.async_write_ha_state()
+
+    @property
+    def name(self) -> str:
+        """Return the name of the entity."""
+        return f"AMT-8000 Partition {self.partition}"
+
+    @property
+    def unique_id(self) -> str | None:
+        """Return a unique ID."""
+        return f"amt8000.partition_{self.partition}"
 
     @property
     def state(self) -> str:
@@ -144,20 +115,29 @@ class AmtAlarmPanel(CoordinatorEntity[AmtCoordinator], AlarmControlPanelEntity, 
             return "disarmed"
 
     @property
-    def is_on(self) -> bool:
-        """Return True if the entity is on."""
-        return self._is_on
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.status is None:
+            return False
+        
+        # Always return True for partitions 1-5 during testing
+        # Later can be changed to use actual enabled status
+        return True
 
     def _arm_away_command(self, client):
         """Arm partition in away mode command function"""
+        LOGGER.info(f"Sending ARM command to partition {self.partition}")
         result = client.arm_system(self.partition)
+        LOGGER.info(f"ARM command result for partition {self.partition}: {result}")
         if result == "armed":
             return 'armed_away'
         return result
 
     def _disarm_command(self, client):
         """Disarm partition command function"""
+        LOGGER.info(f"Sending DISARM command to partition {self.partition}")
         result = client.disarm_system(self.partition)
+        LOGGER.info(f"DISARM command result for partition {self.partition}: {result}")
         if result == "disarmed":
             return 'disarmed'
         return result
@@ -216,6 +196,11 @@ class AmtAlarmPanel(CoordinatorEntity[AmtCoordinator], AlarmControlPanelEntity, 
             f"trigger alarm partition {self.partition}"
         )
 
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if entity is on."""
+        return self._is_on
+
     def turn_on(self, **kwargs: Any) -> None:
         import asyncio
         asyncio.create_task(self.coordinator.async_execute_command(
@@ -244,3 +229,21 @@ class AmtAlarmPanel(CoordinatorEntity[AmtCoordinator], AlarmControlPanelEntity, 
             self._disarm_command,
             f"turn off partition {self.partition}"
         )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional state attributes."""
+        if self.status is None:
+            return {"partition_number": self.partition}
+        
+        partitions = self.status.get("partitions", {})
+        partition_data = partitions.get(self.partition, {})
+        
+        return {
+            "partition_number": self.partition,
+            "enabled": partition_data.get("enabled", False),
+            "armed": partition_data.get("armed", False),
+            "firing": partition_data.get("firing", False),
+            "fired": partition_data.get("fired", False),
+            "stay_mode": partition_data.get("stay", False),
+        }
