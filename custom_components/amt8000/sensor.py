@@ -27,10 +27,21 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the zone sensors for amt-8000."""
-    entry_data = hass.data[DOMAIN][config_entry.entry_id]
-    coordinator = entry_data["coordinator"]
+    data = hass.data[DOMAIN][config_entry.entry_id]
     
-    LOGGER.info('setting up zone sensors...')
+    # Create or reuse coordinator
+    coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
+    if coordinator_key not in hass.data:
+        LOGGER.info("Creating new coordinator for zone sensors")
+        isec_client = ISecClient(data["host"], data["port"])
+        coordinator = AmtCoordinator(hass, isec_client, data["password"])
+        await coordinator.async_config_entry_first_refresh()
+        hass.data[coordinator_key] = coordinator
+    else:
+        LOGGER.info("Reusing existing coordinator for zone sensors")
+        coordinator = hass.data[coordinator_key]
+    
+    LOGGER.info('setting up 61 zone sensors (zones 1-61)...')
     
     # Create 61 zone entities (1-61)
     zones = []
@@ -90,8 +101,15 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
         
         zones = self.status.get("zones", {})
         zone_data = zones.get(self.zone_number, {})
-        # Zone is available if it's enabled in the system
-        return zone_data.get("enabled", False)
+        
+        # For debugging - temporarily make zones 1-20 available by default
+        # Later we can use the actual enabled status
+        if self.zone_number <= 20:
+            available = True  # Always available for first 20 zones
+        else:
+            available = zone_data.get("enabled", False)
+        
+        return available
 
     @property
     def icon(self) -> str:
