@@ -64,6 +64,18 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
     def _handle_coordinator_update(self) -> None:
         """Update the stored value on coordinator updates."""
         self.status = self.coordinator.data
+        
+        # Debug logging to check partition-specific data
+        if self.status and "partitions" in self.status:
+            partitions = self.status["partitions"]
+            if self.partition in partitions:
+                partition_data = partitions[self.partition]
+                LOGGER.debug(f"Partition {self.partition} data: {partition_data}")
+            else:
+                LOGGER.warning(f"Partition {self.partition} not found in data. Available partitions: {list(partitions.keys())}")
+        else:
+            LOGGER.warning(f"No partitions data received. Status keys: {list(self.status.keys()) if self.status else 'None'}")
+        
         self.async_write_ha_state()
 
     @property
@@ -77,11 +89,6 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         return f"amt8000.partition_{self.partition}"
 
     @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self.status is not None
-
-    @property
     def state(self) -> str:
         """Return the state of the entity."""
         if self.status is None:
@@ -90,12 +97,30 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         if self.status['siren'] == True:
             return "triggered"
 
-        # For now, all partitions share the same status from the main system
-        # This could be enhanced to track individual partition states
-        if(self.status["status"].startswith("armed_")):
-          self._is_on = True
+        # Get partition-specific state from coordinator data
+        partitions = self.status.get("partitions", {})
+        partition_data = partitions.get(self.partition, {})
+        
+        if partition_data.get("armed", False):
+            self._is_on = True
+            if partition_data.get("stay", False):
+                return "armed_home"
+            else:
+                return "armed_away"
+        else:
+            self._is_on = False
+            return "disarmed"
 
-        return self.status["status"]
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.status is None:
+            return False
+        
+        partitions = self.status.get("partitions", {})
+        partition_data = partitions.get(self.partition, {})
+        # Partition is available if it's enabled in the system
+        return partition_data.get("enabled", False)
 
     def _arm_away(self):
         """Arm partition in away mode"""
@@ -167,3 +192,21 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
         self._disarm()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional state attributes."""
+        if self.status is None:
+            return {"partition_number": self.partition}
+        
+        partitions = self.status.get("partitions", {})
+        partition_data = partitions.get(self.partition, {})
+        
+        return {
+            "partition_number": self.partition,
+            "enabled": partition_data.get("enabled", False),
+            "armed": partition_data.get("armed", False),
+            "firing": partition_data.get("firing", False),
+            "fired": partition_data.get("fired", False),
+            "stay_mode": partition_data.get("stay", False),
+        }
