@@ -102,12 +102,9 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
         zones = self.status.get("zones", {})
         zone_data = zones.get(self.zone_number, {})
         
-        # For debugging - temporarily make zones 1-20 available by default
-        # Later we can use the actual enabled status
-        if self.zone_number <= 20:
-            available = True  # Always available for first 20 zones
-        else:
-            available = zone_data.get("enabled", False)
+        # Make all 61 zones available by default
+        # Later we can use actual enabled status from the system
+        available = zone_data.get("enabled", True)  # Default to True for all zones
         
         return available
 
