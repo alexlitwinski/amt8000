@@ -84,7 +84,7 @@ class AmtCoordinator(DataUpdateCoordinator):
     async def async_execute_command(self, command_func, description="command"):
         """Execute a command with connection locking and retry logic."""
         async with self._connection_lock:
-            max_retries = 3
+            max_retries = 2  # Reduced retries for faster response
             for attempt in range(max_retries):
                 try:
                     LOGGER.debug(f"Executing {description} (attempt {attempt + 1})")
@@ -105,4 +105,4 @@ class AmtCoordinator(DataUpdateCoordinator):
                     if attempt == max_retries - 1:
                         LOGGER.error(f"All attempts failed for {description}")
                         raise
-                    await asyncio.sleep(1)  # Wait before retry
+                    await asyncio.sleep(0.5)  # Reduced wait time
