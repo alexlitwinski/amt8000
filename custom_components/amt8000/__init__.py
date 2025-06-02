@@ -10,7 +10,7 @@ from .const import DOMAIN
 
 LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[str] = ["alarm_control_panel"]
+PLATFORMS: list[str] = ["alarm_control_panel", "sensor"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
