@@ -1,4 +1,4 @@
-"""Defines the sensors for amt-8000."""
+"""Defines the alarm control panels for amt-8000."""
 from datetime import timedelta
 import logging
 from typing import Any
@@ -33,28 +33,31 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][config_entry.entry_id]
     isec_client = ISecClient(data["host"], data["port"])
     coordinator = AmtCoordinator(hass, isec_client, data["password"])
-    LOGGER.info('setting up...')
-    # coordinator.async_config_entry_first_refresh()
-    sensors = [AmtAlarmPanel(coordinator, isec_client, data['password'])]
-    async_add_entities(sensors)
+    LOGGER.info('setting up alarm control panels...')
+    
+    # Create 5 partition entities (1-5)
+    panels = []
+    for partition in range(1, 6):
+        panels.append(AmtAlarmPanel(coordinator, isec_client, data['password'], partition))
+    
+    async_add_entities(panels)
 
 
 class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
-    """Define a Amt Alarm Panel."""
+    """Define a Amt Alarm Panel for a partition."""
 
     _attr_supported_features = (
           AlarmControlPanelEntityFeature.ARM_AWAY
-        # | AlarmControlPanelEntityFeature.ARM_NIGHT
-        # | AlarmControlPanelEntityFeature.ARM_HOME
         | AlarmControlPanelEntityFeature.TRIGGER
     )
 
-    def __init__(self, coordinator, isec_client: ISecClient, password):
+    def __init__(self, coordinator, isec_client: ISecClient, password, partition):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self.status = None
         self.isec_client = isec_client
         self.password = password
+        self.partition = partition
         self._is_on = False
 
     @callback
@@ -66,12 +69,12 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
     @property
     def name(self) -> str:
         """Return the name of the entity."""
-        return "AMT-8000"
+        return f"AMT-8000 Partition {self.partition}"
 
     @property
     def unique_id(self) -> str | None:
         """Return a unique ID."""
-        return "amt8000.control_panel"
+        return f"amt8000.partition_{self.partition}"
 
     @property
     def available(self) -> bool:
@@ -87,29 +90,30 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         if self.status['siren'] == True:
             return "triggered"
 
+        # For now, all partitions share the same status from the main system
+        # This could be enhanced to track individual partition states
         if(self.status["status"].startswith("armed_")):
           self._is_on = True
 
         return self.status["status"]
 
     def _arm_away(self):
-        """Arm AMT in away mode"""
+        """Arm partition in away mode"""
         self.isec_client.connect()
         self.isec_client.auth(self.password)
-        result = self.isec_client.arm_system(0)
+        result = self.isec_client.arm_system(self.partition)
         self.isec_client.close()
         if result == "armed":
             return 'armed_away'
 
     def _disarm(self):
-        """Arm AMT in away mode"""
+        """Disarm partition"""
         self.isec_client.connect()
         self.isec_client.auth(self.password)
-        result = self.isec_client.disarm_system(0)
+        result = self.isec_client.disarm_system(self.partition)
         self.isec_client.close()
         if result == "disarmed":
             return 'disarmed'
-
 
     def _trigger_alarm(self):
         """Trigger Alarm"""
@@ -119,7 +123,6 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         self.isec_client.close()
         if result == "triggered":
             return "triggered"
-
 
     def alarm_disarm(self, code=None) -> None:
         """Send disarm command."""
@@ -164,4 +167,3 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
         self._disarm()
-
