@@ -1,5 +1,4 @@
 from datetime import timedelta, datetime
-import random
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -41,12 +40,21 @@ class AmtCoordinator(DataUpdateCoordinator):
           self.isec_client.auth(self.password)
           status = self.isec_client.status()
           LOGGER.info(f"AMT-8000 new state: {status}")
+          
+          # Debug logging for partitions
+          if "partitions" in status:
+              LOGGER.debug(f"Partitions data: {status['partitions']}")
+              for partition_num, partition_data in status["partitions"].items():
+                  LOGGER.debug(f"Partition {partition_num}: enabled={partition_data['enabled']}, armed={partition_data['armed']}, stay={partition_data['stay']}")
+          
+          # Debug logging for zones
+          if "zones" in status:
+              enabled_zones = [zone_num for zone_num, zone_data in status["zones"].items() if zone_data.get("enabled", False)]
+              open_zones = [zone_num for zone_num, zone_data in status["zones"].items() if zone_data.get("open", False) or zone_data.get("violated", False)]
+              LOGGER.debug(f"Enabled zones: {enabled_zones}")
+              LOGGER.debug(f"Open/violated zones: {open_zones}")
+          
           self.isec_client.close()
-
-          # Add zone information to the status
-          # This is a simplified implementation - in a real scenario,
-          # you would need to modify the client to get actual zone states
-          status["zones"] = self._simulate_zone_states(status)
 
           self.stored_status = status
           self.attemt = 0
@@ -62,27 +70,3 @@ class AmtCoordinator(DataUpdateCoordinator):
 
         finally:
            self.isec_client.close()
-
-    def _simulate_zone_states(self, status):
-        """Simulate zone states based on system status.
-        
-        In a real implementation, this should be replaced with actual
-        zone data retrieval from the AMT-8000 system.
-        """
-        zones = {}
-        
-        for zone in range(1, 62):
-            # Simple simulation logic
-            if status["status"] == "disarmed":
-                # When disarmed, some zones might show activity
-                if zone <= 20:
-                    # Entry zones more likely to be open
-                    zones[zone] = "open" if random.random() < 0.3 else "closed"
-                else:
-                    # Other zones mostly closed
-                    zones[zone] = "open" if random.random() < 0.1 else "closed"
-            else:
-                # When armed, most zones should be closed
-                zones[zone] = "open" if random.random() < 0.05 else "closed"
-        
-        return zones
