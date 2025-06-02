@@ -31,14 +31,25 @@ async def async_setup_entry(
 ) -> None:
     """Set up the entries for amt-8000."""
     data = hass.data[DOMAIN][config_entry.entry_id]
-    isec_client = ISecClient(data["host"], data["port"])
-    coordinator = AmtCoordinator(hass, isec_client, data["password"])
-    LOGGER.info('setting up alarm control panels...')
     
-    # Create 5 partition entities (1-5)
+    # Create or reuse coordinator
+    coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
+    if coordinator_key not in hass.data:
+        LOGGER.info("Creating new coordinator for alarm control panels")
+        isec_client = ISecClient(data["host"], data["port"])
+        coordinator = AmtCoordinator(hass, isec_client, data["password"])
+        await coordinator.async_config_entry_first_refresh()
+        hass.data[coordinator_key] = coordinator
+    else:
+        LOGGER.info("Reusing existing coordinator for alarm control panels")
+        coordinator = hass.data[coordinator_key]
+    
+    LOGGER.info('Setting up 5 alarm control panels (partitions 1-5)...')
+    
+    # Create 5 partition entities (1-5) - CORRIGIDO: SEM isec_client
     panels = []
     for partition in range(1, 6):
-        panels.append(AmtAlarmPanel(coordinator, isec_client, data['password'], partition))
+        panels.append(AmtAlarmPanel(coordinator, data['password'], partition))
     
     async_add_entities(panels)
 
