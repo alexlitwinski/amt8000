@@ -36,6 +36,9 @@ def build_status(data):
     length = merge_octets(data[4:6]) - 2
     payload = data[8 : 8 + length]
 
+    if len(payload) != 143:
+        raise ValueError(f"Invalid payload length: {len(payload)}, expected 143")
+
     model = "AMT-8000" if payload[0] == 1 else "Unknown"
 
     status = {
@@ -45,7 +48,84 @@ def build_status(data):
         "zonesFiring": (payload[20] & 0x8) > 0,
         "zonesClosed": (payload[20] & 0x4) > 0,
         "siren": (payload[20] & 0x2) > 0,
+        "zones": {},
+        "partitions": {}
     }
+
+    # Extract zone information (first 61 zones as requested)
+    for i in range(61):
+        zone_number = i + 1
+        status["zones"][zone_number] = {
+            "number": zone_number,
+            "enabled": False,
+            "open": False,
+            "violated": False,
+            "anulated": False,  # bypassed
+            "tamper": False,
+            "lowBattery": False
+        }
+
+    # Zones enabled (bytes 12-18, 7 bytes = 56 bits, covers zones 1-56)
+    for i, octet in enumerate(payload[12:19]):
+        for j in range(8):
+            zone_idx = j + i * 8
+            if zone_idx < 61:  # Only process first 61 zones
+                status["zones"][zone_idx + 1]["enabled"] = (octet & (1 << j)) > 0
+
+    # Zones open (bytes 38-44, 7 bytes = 56 bits)
+    for i, octet in enumerate(payload[38:45]):
+        for j in range(8):
+            zone_idx = j + i * 8
+            if zone_idx < 61:  # Only process first 61 zones
+                status["zones"][zone_idx + 1]["open"] = (octet & (1 << j)) > 0
+
+    # Zones violated (bytes 46-52, 7 bytes = 56 bits)
+    for i, octet in enumerate(payload[46:53]):
+        for j in range(8):
+            zone_idx = j + i * 8
+            if zone_idx < 61:  # Only process first 61 zones
+                status["zones"][zone_idx + 1]["violated"] = (octet & (1 << j)) > 0
+
+    # Zones bypassed/anulated (bytes 54-61, 8 bytes = 64 bits)
+    for i, octet in enumerate(payload[54:62]):
+        for j in range(8):
+            zone_idx = j + i * 8
+            if zone_idx < 61:  # Only process first 61 zones
+                status["zones"][zone_idx + 1]["anulated"] = (octet & (1 << j)) > 0
+
+    # Zone tamper (bytes 89-95, 7 bytes = 56 bits)
+    for i, octet in enumerate(payload[89:96]):
+        for j in range(8):
+            zone_idx = j + i * 8
+            if zone_idx < 61:  # Only process first 61 zones
+                status["zones"][zone_idx + 1]["tamper"] = (octet & (1 << j)) > 0
+
+    # Zone low battery (bytes 105-111, 7 bytes = 56 bits)
+    for i, octet in enumerate(payload[105:112]):
+        for j in range(8):
+            zone_idx = j + i * 8
+            if zone_idx < 61:  # Only process first 61 zones
+                status["zones"][zone_idx + 1]["lowBattery"] = (octet & (1 << j)) > 0
+
+    # Extract partition information (first 5 partitions as requested)
+    for i in range(5):
+        octet = payload[21 + i]
+        partition_number = i + 1
+        status["partitions"][partition_number] = {
+            "number": partition_number,
+            "enabled": (octet & 0x80) > 0,
+            "armed": (octet & 0x01) > 0,
+            "firing": (octet & 0x04) > 0,
+            "fired": (octet & 0x08) > 0,
+            "stay": (octet & 0x40) > 0
+        }
+
+    # Debug logging for partitions
+    print(f"Raw partition bytes: {[hex(payload[21 + i]) for i in range(5)]}")
+    for i in range(5):
+        partition_number = i + 1
+        partition_data = status["partitions"][partition_number]
+        print(f"Partition {partition_number}: {partition_data}")
 
     status["batteryStatus"] = battery_status_for(payload)
     status["tamper"] = (payload[71] & (1 << 0x01)) > 0
