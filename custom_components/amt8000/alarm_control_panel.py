@@ -140,6 +140,9 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         LOGGER.info(f"DISARM command result for partition {self.partition}: {result}")
         if result == "disarmed":
             return 'disarmed'
+        elif result == "failed":
+            LOGGER.error(f"DISARM failed for partition {self.partition}")
+            return "failed"
         return result
 
     def _trigger_alarm_command(self, client):
