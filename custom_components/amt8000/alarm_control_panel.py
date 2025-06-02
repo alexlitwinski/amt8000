@@ -51,11 +51,10 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         | AlarmControlPanelEntityFeature.TRIGGER
     )
 
-    def __init__(self, coordinator, isec_client: ISecClient, password, partition):
+    def __init__(self, coordinator, password, partition):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self.status = None
-        self.isec_client = isec_client
         self.password = password
         self.partition = partition
         self._is_on = False
@@ -65,12 +64,20 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         """Update the stored value on coordinator updates."""
         self.status = self.coordinator.data
         
-        # Debug logging to check partition-specific data
+        # Debug logging to check partition-specific data (reduced frequency)
         if self.status and "partitions" in self.status:
             partitions = self.status["partitions"]
             if self.partition in partitions:
                 partition_data = partitions[self.partition]
-                LOGGER.debug(f"Partition {self.partition}: enabled={partition_data.get('enabled')}, armed={partition_data.get('armed')}, stay={partition_data.get('stay')}")
+                # Only log every 5th update to reduce spam
+                if hasattr(self, '_debug_counter'):
+                    self._debug_counter += 1
+                else:
+                    self._debug_counter = 1
+                    
+                if self._debug_counter % 5 == 0:
+                    main_status = self.status.get('status', 'unknown')
+                    LOGGER.debug(f"Partition {self.partition}: armed={partition_data.get('armed')}, stay={partition_data.get('stay')}, main_status={main_status}")
             else:
                 LOGGER.warning(f"Partition {self.partition} not found in payload data")
         
@@ -127,56 +134,73 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         
         return available
 
-    def _arm_away(self):
-        """Arm partition in away mode"""
-        self.isec_client.connect()
-        self.isec_client.auth(self.password)
-        result = self.isec_client.arm_system(self.partition)
-        self.isec_client.close()
+    def _arm_away_command(self, client):
+        """Arm partition in away mode command function"""
+        result = client.arm_system(self.partition)
         if result == "armed":
             return 'armed_away'
+        return result
 
-    def _disarm(self):
-        """Disarm partition"""
-        self.isec_client.connect()
-        self.isec_client.auth(self.password)
-        result = self.isec_client.disarm_system(self.partition)
-        self.isec_client.close()
+    def _disarm_command(self, client):
+        """Disarm partition command function"""
+        result = client.disarm_system(self.partition)
         if result == "disarmed":
             return 'disarmed'
+        return result
 
-    def _trigger_alarm(self):
-        """Trigger Alarm"""
-        self.isec_client.connect()
-        self.isec_client.auth(self.password)
-        result = self.isec_client.panic(1)
-        self.isec_client.close()
+    def _trigger_alarm_command(self, client):
+        """Trigger Alarm command function"""
+        result = client.panic(1)
         if result == "triggered":
             return "triggered"
+        return result
 
     def alarm_disarm(self, code=None) -> None:
         """Send disarm command."""
-        self._disarm()
+        # Use coordinator's command execution
+        import asyncio
+        asyncio.create_task(self.coordinator.async_execute_command(
+            self._disarm_command,
+            f"disarm partition {self.partition}"
+        ))
 
     async def async_alarm_disarm(self, code=None) -> None:
         """Send disarm command."""
-        self._disarm()
+        await self.coordinator.async_execute_command(
+            self._disarm_command,
+            f"disarm partition {self.partition}"
+        )
 
     def alarm_arm_away(self, code=None) -> None:
         """Send arm away command."""
-        self._arm_away()
+        # Use coordinator's command execution
+        import asyncio
+        asyncio.create_task(self.coordinator.async_execute_command(
+            self._arm_away_command,
+            f"arm away partition {self.partition}"
+        ))
 
     async def async_alarm_arm_away(self, code=None) -> None:
         """Send arm away command."""
-        self._arm_away()
+        await self.coordinator.async_execute_command(
+            self._arm_away_command,
+            f"arm away partition {self.partition}"
+        )
 
     def alarm_trigger(self, code=None) -> None:
         """Send alarm trigger command."""
-        self._trigger_alarm()
+        import asyncio
+        asyncio.create_task(self.coordinator.async_execute_command(
+            self._trigger_alarm_command,
+            f"trigger alarm partition {self.partition}"
+        ))
 
     async def async_alarm_trigger(self, code=None) -> None:
         """Send alarm trigger command."""
-        self._trigger_alarm()
+        await self.coordinator.async_execute_command(
+            self._trigger_alarm_command,
+            f"trigger alarm partition {self.partition}"
+        )
 
     @property
     def is_on(self) -> bool | None:
@@ -184,19 +208,33 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         return self._is_on
 
     def turn_on(self, **kwargs: Any) -> None:
-        self._arm_away()
+        import asyncio
+        asyncio.create_task(self.coordinator.async_execute_command(
+            self._arm_away_command,
+            f"turn on partition {self.partition}"
+        ))
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the entity on."""
-        self._arm_away()
+        await self.coordinator.async_execute_command(
+            self._arm_away_command,
+            f"turn on partition {self.partition}"
+        )
 
     def turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
-        self._disarm()
+        import asyncio
+        asyncio.create_task(self.coordinator.async_execute_command(
+            self._disarm_command,
+            f"turn off partition {self.partition}"
+        ))
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
-        self._disarm()
+        await self.coordinator.async_execute_command(
+            self._disarm_command,
+            f"turn off partition {self.partition}"
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
