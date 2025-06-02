@@ -120,13 +120,6 @@ def build_status(data):
             "stay": (octet & 0x40) > 0
         }
 
-    # Debug logging for partitions
-    print(f"Raw partition bytes: {[hex(payload[21 + i]) for i in range(5)]}")
-    for i in range(5):
-        partition_number = i + 1
-        partition_data = status["partitions"][partition_number]
-        print(f"Partition {partition_number}: {partition_data}")
-
     status["batteryStatus"] = battery_status_for(payload)
     status["tamper"] = (payload[71] & (1 << 0x01)) > 0
 
