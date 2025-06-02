@@ -101,10 +101,12 @@ class AmtCoordinator(DataUpdateCoordinator):
                     # Log result for debugging
                     if result in ["armed", "disarmed"]:
                         LOGGER.info(f"Successfully executed {description}: {result}")
+                    elif result == "failed":
+                        LOGGER.error(f"Command {description} explicitly failed")
                     else:
-                        LOGGER.warning(f"Command {description} returned: {result}")
+                        LOGGER.warning(f"Command {description} returned unexpected result: {result}")
                     
-                    # Force coordinator refresh after successful command
+                    # Force coordinator refresh after command (successful or not)
                     await self.async_request_refresh()
                     
                     return result
