@@ -44,7 +44,7 @@ async def async_setup_entry(
     
     LOGGER.info('Setting up 5 alarm control panels (partitions 1-5)...')
     
-    # Create 5 partition entities (1-5)
+    # Create 5 partition entities (1-5) - SEM isec_client!
     panels = []
     for partition in range(1, 6):
         panels.append(AmtAlarmPanel(coordinator, data['password'], partition))
