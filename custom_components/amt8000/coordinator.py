@@ -1,4 +1,5 @@
 from datetime import timedelta, datetime
+import asyncio
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -26,6 +27,8 @@ class AmtCoordinator(DataUpdateCoordinator):
         self.next_update = datetime.now()
         self.stored_status = None
         self.attemt = 0
+        # Connection lock to prevent simultaneous connections
+        self._connection_lock = asyncio.Lock()
 
     async def _async_update_data(self):
         """Retrieve the current status."""
@@ -34,42 +37,72 @@ class AmtCoordinator(DataUpdateCoordinator):
         if(datetime.now() < self.next_update):
            return self.stored_status
 
-        try:
-          LOGGER.info("retrieving amt-8000 updated status...")
-          self.isec_client.connect()
-          self.isec_client.auth(self.password)
-          status = self.isec_client.status()
-          
-          # Verify data structure
-          partitions_count = len(status.get("partitions", {}))
-          zones_count = len(status.get("zones", {}))
-          LOGGER.info(f"AMT-8000 status retrieved - Partitions: {partitions_count}, Zones: {zones_count}, System Status: {status.get('status', 'unknown')}")
-          
-          # Debug logging for partitions (reduced)
-          if "partitions" in status:
-              enabled_partitions = [p for p, data in status["partitions"].items() if data.get("enabled")]
-              armed_partitions = [p for p, data in status["partitions"].items() if data.get("armed")]
-              LOGGER.debug(f"Enabled partitions: {enabled_partitions}, Armed partitions: {armed_partitions}")
-          
-          # Debug logging for zones (reduced)
-          if "zones" in status:
-              enabled_zones = [z for z, data in status["zones"].items() if data.get("enabled")]
-              open_zones = [z for z, data in status["zones"].items() if data.get("open") or data.get("violated")]
-              LOGGER.debug(f"Enabled zones: {len(enabled_zones)}, Open/violated zones: {open_zones}")
-          
-          self.isec_client.close()
+        async with self._connection_lock:
+            try:
+              LOGGER.info("retrieving amt-8000 updated status...")
+              self.isec_client.connect()
+              self.isec_client.auth(self.password)
+              status = self.isec_client.status()
+              
+              # Verify data structure
+              partitions_count = len(status.get("partitions", {}))
+              zones_count = len(status.get("zones", {}))
+              LOGGER.info(f"AMT-8000 status retrieved - Partitions: {partitions_count}, Zones: {zones_count}, System Status: {status.get('status', 'unknown')}")
+              
+              # Debug logging for partitions (reduced)
+              if "partitions" in status:
+                  enabled_partitions = [p for p, data in status["partitions"].items() if data.get("enabled")]
+                  armed_partitions = [p for p, data in status["partitions"].items() if data.get("armed")]
+                  LOGGER.debug(f"Enabled partitions: {enabled_partitions}, Armed partitions: {armed_partitions}")
+              
+              # Debug logging for zones (reduced)
+              if "zones" in status:
+                  enabled_zones = [z for z, data in status["zones"].items() if data.get("enabled")]
+                  open_zones = [z for z, data in status["zones"].items() if data.get("open") or data.get("violated")]
+                  LOGGER.debug(f"Enabled zones: {len(enabled_zones)}, Open/violated zones: {open_zones}")
+              
+              self.isec_client.close()
 
-          self.stored_status = status
-          self.attemt = 0
-          self.next_update = datetime.now()
+              self.stored_status = status
+              self.attemt = 0
+              self.next_update = datetime.now()
 
-          return status
-        except Exception as e:
-          print(f"Coordinator update error: {e}")
-          seconds = 2 ** self.attemt
-          time_difference = timedelta(seconds=seconds)
-          self.next_update = datetime.now() + time_difference
-          print(f"Next retry after {self.next_update}")
+              return status
+            except Exception as e:
+              LOGGER.error(f"Coordinator update error: {e}")
+              seconds = 2 ** self.attemt
+              time_difference = timedelta(seconds=seconds)
+              self.next_update = datetime.now() + time_difference
+              LOGGER.warning(f"Next retry after {self.next_update}")
 
-        finally:
-           self.isec_client.close()
+            finally:
+               try:
+                   self.isec_client.close()
+               except:
+                   pass
+
+    async def async_execute_command(self, command_func, description="command"):
+        """Execute a command with connection locking and retry logic."""
+        async with self._connection_lock:
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    LOGGER.debug(f"Executing {description} (attempt {attempt + 1})")
+                    
+                    # Create a fresh client for commands
+                    command_client = ISecClient(self.isec_client.host, self.isec_client.port)
+                    command_client.connect()
+                    command_client.auth(self.password)
+                    
+                    result = command_func(command_client)
+                    
+                    command_client.close()
+                    LOGGER.info(f"Successfully executed {description}")
+                    return result
+                    
+                except Exception as e:
+                    LOGGER.warning(f"Attempt {attempt + 1} failed for {description}: {e}")
+                    if attempt == max_retries - 1:
+                        LOGGER.error(f"All attempts failed for {description}")
+                        raise
+                    await asyncio.sleep(1)  # Wait before retry
