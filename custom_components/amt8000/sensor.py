@@ -41,7 +41,7 @@ async def async_setup_entry(
         LOGGER.info("Reusing existing coordinator for zone sensors")
         coordinator = hass.data[coordinator_key]
     
-    LOGGER.info('setting up 61 zone sensors (zones 1-61)...')
+    LOGGER.info('Setting up 61 zone sensors (zones 1-61)...')
     
     # Create 61 zone entities (1-61)
     zones = []
@@ -65,6 +65,20 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
     def _handle_coordinator_update(self) -> None:
         """Update the stored value on coordinator updates."""
         self.status = self.coordinator.data
+        
+        # Simple debug logging for first few zones only
+        if self.status and "zones" in self.status and self.zone_number <= 5:
+            zones = self.status["zones"]
+            if self.zone_number in zones:
+                zone_data = zones[self.zone_number]
+                if not hasattr(self, '_last_state'):
+                    self._last_state = None
+                
+                current_open = zone_data.get('open', False) or zone_data.get('violated', False)
+                if self._last_state != current_open:
+                    LOGGER.info(f"Zone {self.zone_number} state changed: {self._last_state} → {current_open}")
+                    self._last_state = current_open
+        
         self.async_write_ha_state()
 
     @property
@@ -99,14 +113,9 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
         if self.status is None:
             return False
         
-        zones = self.status.get("zones", {})
-        zone_data = zones.get(self.zone_number, {})
-        
-        # Make all 61 zones available by default
-        # Later we can use actual enabled status from the system
-        available = zone_data.get("enabled", True)  # Default to True for all zones
-        
-        return available
+        # Always return True for zones 1-61 during testing
+        # Later can be changed to use: zones.get(self.zone_number, {}).get("enabled", False)
+        return True
 
     @property
     def icon(self) -> str:
