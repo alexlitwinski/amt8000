@@ -120,7 +120,7 @@ def build_status(data):
             "stay": (octet & 0x40) > 0
         }
 
-    # Check if partitions have any armed status
+    # Debug: Count armed partitions
     armed_partitions = [p for p, data in status["partitions"].items() if data.get("armed")]
     main_system_armed = status["status"] in ["armed_away", "partial_armed"]
     
