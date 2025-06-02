@@ -108,10 +108,8 @@ def build_status(data):
                 status["zones"][zone_idx + 1]["lowBattery"] = (octet & (1 << j)) > 0
 
     # Extract partition information (first 5 partitions as requested)
-    partition_bytes = []
     for i in range(5):
         octet = payload[21 + i]
-        partition_bytes.append(hex(octet))
         partition_number = i + 1
         status["partitions"][partition_number] = {
             "number": partition_number,
@@ -122,36 +120,22 @@ def build_status(data):
             "stay": (octet & 0x40) > 0
         }
 
-    # Debug: Print raw partition bytes for troubleshooting
-    print(f"PARTITION DEBUG: Raw bytes [21-25]: {partition_bytes}")
-    print(f"PARTITION DEBUG: Main system status: '{status['status']}'")
-
-    # Debug: Check if partitions have any armed status
+    # Check if partitions have any armed status
     armed_partitions = [p for p, data in status["partitions"].items() if data.get("armed")]
     main_system_armed = status["status"] in ["armed_away", "partial_armed"]
-    
-    print(f"PARTITION DEBUG: Armed partitions from payload bits: {armed_partitions}")
-    print(f"PARTITION DEBUG: Should use fallback? {not armed_partitions and main_system_armed}")
     
     # If no individual partitions are armed but system is armed, 
     # use main system status as fallback for all partitions
     if not armed_partitions and main_system_armed:
-        print("PARTITION DEBUG: Using fallback - setting all partitions based on main system status")
         for partition_number in range(1, 6):
             if status["status"] == "armed_away":
                 # All partitions armed in away mode
                 status["partitions"][partition_number]["armed"] = True
                 status["partitions"][partition_number]["stay"] = False
-                print(f"PARTITION DEBUG: Set partition {partition_number} to armed_away via fallback")
             elif status["status"] == "partial_armed":
                 # Some partitions armed - for now assume all are armed in stay mode
                 status["partitions"][partition_number]["armed"] = True
                 status["partitions"][partition_number]["stay"] = True
-                print(f"PARTITION DEBUG: Set partition {partition_number} to armed_home via fallback")
-
-    # Print final partition states
-    for partition_num, partition_data in status["partitions"].items():
-        print(f"PARTITION DEBUG: Final Partition {partition_num}: armed={partition_data['armed']}, stay={partition_data['stay']}")
 
     status["batteryStatus"] = battery_status_for(payload)
     status["tamper"] = (payload[71] & (1 << 0x01)) > 0
