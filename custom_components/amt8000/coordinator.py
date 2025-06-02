@@ -39,20 +39,23 @@ class AmtCoordinator(DataUpdateCoordinator):
           self.isec_client.connect()
           self.isec_client.auth(self.password)
           status = self.isec_client.status()
-          LOGGER.info(f"AMT-8000 new state: {status}")
           
-          # Debug logging for partitions
+          # Verify data structure
+          partitions_count = len(status.get("partitions", {}))
+          zones_count = len(status.get("zones", {}))
+          LOGGER.info(f"AMT-8000 status retrieved - Partitions: {partitions_count}, Zones: {zones_count}, System Status: {status.get('status', 'unknown')}")
+          
+          # Debug logging for partitions (reduced)
           if "partitions" in status:
-              LOGGER.debug(f"Partitions data: {status['partitions']}")
-              for partition_num, partition_data in status["partitions"].items():
-                  LOGGER.debug(f"Partition {partition_num}: enabled={partition_data['enabled']}, armed={partition_data['armed']}, stay={partition_data['stay']}")
+              enabled_partitions = [p for p, data in status["partitions"].items() if data.get("enabled")]
+              armed_partitions = [p for p, data in status["partitions"].items() if data.get("armed")]
+              LOGGER.debug(f"Enabled partitions: {enabled_partitions}, Armed partitions: {armed_partitions}")
           
-          # Debug logging for zones
+          # Debug logging for zones (reduced)
           if "zones" in status:
-              enabled_zones = [zone_num for zone_num, zone_data in status["zones"].items() if zone_data.get("enabled", False)]
-              open_zones = [zone_num for zone_num, zone_data in status["zones"].items() if zone_data.get("open", False) or zone_data.get("violated", False)]
-              LOGGER.debug(f"Enabled zones: {enabled_zones}")
-              LOGGER.debug(f"Open/violated zones: {open_zones}")
+              enabled_zones = [z for z, data in status["zones"].items() if data.get("enabled")]
+              open_zones = [z for z, data in status["zones"].items() if data.get("open") or data.get("violated")]
+              LOGGER.debug(f"Enabled zones: {len(enabled_zones)}, Open/violated zones: {open_zones}")
           
           self.isec_client.close()
 
