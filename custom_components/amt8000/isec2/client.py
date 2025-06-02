@@ -198,7 +198,7 @@ class Client:
         return status
 
     def arm_system(self, partition):
-        """Return the current status."""
+        """Arm the system partition (no code required)."""
         if self.client is None:
               raise CommunicationError("Client not connected. Call Client.connect")
 
@@ -222,7 +222,7 @@ class Client:
         return 'not_armed'
 
     def disarm_system(self, partition):
-        """Return the current status."""
+        """Disarm the system partition (no code required)."""
         if self.client is None:
               raise CommunicationError("Client not connected. Call Client.connect")
 
@@ -246,7 +246,7 @@ class Client:
         return 'not_disarmed'
 
     def panic(self, type):
-        """Return the current status."""
+        """Trigger panic alarm."""
         if self.client is None:
               raise CommunicationError("Client not connected. Call Client.connect")
 
@@ -265,4 +265,3 @@ class Client:
             return 'triggered'
 
         return 'not_triggered'
-
