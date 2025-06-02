@@ -27,9 +27,9 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the zone sensors for amt-8000."""
-    data = hass.data[DOMAIN][config_entry.entry_id]
-    isec_client = ISecClient(data["host"], data["port"])
-    coordinator = AmtCoordinator(hass, isec_client, data["password"])
+    entry_data = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator = entry_data["coordinator"]
+    
     LOGGER.info('setting up zone sensors...')
     
     # Create 61 zone entities (1-61)
@@ -67,11 +67,6 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
         return f"amt8000.zone_{self.zone_number}"
 
     @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self.status is not None
-
-    @property
     def state(self) -> str:
         """Return the state of the zone."""
         if self.status is None:
@@ -79,7 +74,24 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
         
         # Get zone state from coordinator data
         zones = self.status.get("zones", {})
-        return zones.get(self.zone_number, "unknown")
+        zone_data = zones.get(self.zone_number, {})
+        
+        # A zone is considered "open" if it's either open or violated
+        if zone_data.get("open", False) or zone_data.get("violated", False):
+            return "open"
+        else:
+            return "closed"
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.status is None:
+            return False
+        
+        zones = self.status.get("zones", {})
+        zone_data = zones.get(self.zone_number, {})
+        # Zone is available if it's enabled in the system
+        return zone_data.get("enabled", False)
 
     @property
     def icon(self) -> str:
@@ -91,7 +103,18 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
+        if self.status is None:
+            return {"zone_number": self.zone_number}
+        
+        zones = self.status.get("zones", {})
+        zone_data = zones.get(self.zone_number, {})
+        
         return {
             "zone_number": self.zone_number,
-            "zone_type": "motion",  # This could be enhanced based on actual zone configuration
+            "enabled": zone_data.get("enabled", False),
+            "open": zone_data.get("open", False),
+            "violated": zone_data.get("violated", False),
+            "bypassed": zone_data.get("anulated", False),
+            "tamper": zone_data.get("tamper", False),
+            "low_battery": zone_data.get("lowBattery", False),
         }
