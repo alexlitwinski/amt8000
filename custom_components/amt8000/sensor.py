@@ -18,7 +18,7 @@ from .isec2.client import Client as ISecClient
 LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
-SCAN_INTERVAL = timedelta(seconds=10)
+SCAN_INTERVAL = timedelta(seconds=4)  # Changed from 10 to 4 seconds
 
 
 async def async_setup_entry(
@@ -60,6 +60,7 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
         self.zone_number = zone_number
         self.status = None
         self._attr_device_class = "motion"
+        self._last_state = None
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -67,16 +68,13 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
         self.status = self.coordinator.data
         
         # Simple debug logging for first few zones only
-        if self.status and "zones" in self.status and self.zone_number <= 5:
+        if self.status and "zones" in self.status and self.zone_number <= 3:
             zones = self.status["zones"]
             if self.zone_number in zones:
                 zone_data = zones[self.zone_number]
-                if not hasattr(self, '_last_state'):
-                    self._last_state = None
-                
                 current_open = zone_data.get('open', False) or zone_data.get('violated', False)
                 if self._last_state != current_open:
-                    LOGGER.info(f"Zone {self.zone_number} state changed: {self._last_state} → {current_open}")
+                    LOGGER.debug(f"Zone {self.zone_number} state changed: {self._last_state} → {current_open}")
                     self._last_state = current_open
         
         self.async_write_ha_state()
@@ -113,9 +111,12 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
         if self.status is None:
             return False
         
-        # Always return True for zones 1-61 during testing
-        # Later can be changed to use: zones.get(self.zone_number, {}).get("enabled", False)
-        return True
+        # More robust availability check - same as alarm panels
+        if not hasattr(self.coordinator, 'consecutive_failures'):
+            return True
+            
+        # Mark as unavailable if too many consecutive failures
+        return self.coordinator.consecutive_failures < 5
 
     @property
     def icon(self) -> str:
