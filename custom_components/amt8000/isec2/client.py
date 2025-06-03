@@ -1,7 +1,6 @@
 """Module for amt-8000 communication."""
 
 import socket
-import logging
 
 timeout = 2  # Set the timeout to 2 seconds
 
@@ -34,6 +33,8 @@ def calculate_checksum(buffer):
 
 def build_status(data):
     """Build the amt-8000 status from a given array of bytes."""
+    import logging
+    
     length = merge_octets(data[4:6]) - 2
     payload = data[8 : 8 + length]
 
@@ -108,23 +109,33 @@ def build_status(data):
             if zone_idx < 61:  # Only process first 61 zones
                 status["zones"][zone_idx + 1]["lowBattery"] = (octet & (1 << j)) > 0
 
-    # Extract partition information - TESTING: Use byte 22 as starting point
-    logger = logging.getLogger(__name__)
-    logger.info(f"DEBUG: Testing partition mapping from byte 22:")
+    # Extract partition information - DEBUGGING RAW BYTES
+    logger = logging.getLogger("custom_components.amt8000.coordinator")
+    logger.warning("=== PARTITION DEBUG BYTES ===")
+    
+    # Show bytes 20-30 to find the right pattern
+    for byte_pos in range(20, min(31, len(payload))):
+        octet = payload[byte_pos]
+        logger.warning(f"Byte {byte_pos}: 0x{octet:02x} ({octet:08b}) - armed_bit: {(octet & 0x01) > 0}")
+    
+    logger.warning("=== TESTING BYTE 22 START ===")
     for i in range(5):  # Process partitions 1-5
         byte_pos = 22 + i
         if byte_pos < len(payload):
             octet = payload[byte_pos]
             partition_number = i + 1
-            logger.info(f"  Partition {partition_number} ← byte {byte_pos}: 0x{octet:02x} ({octet:08b}) - armed: {(octet & 0x01) > 0}")
+            is_armed = (octet & 0x01) > 0
+            logger.warning(f"Partition {partition_number} ← byte {byte_pos}: 0x{octet:02x} - armed: {is_armed}")
             status["partitions"][partition_number] = {
                 "number": partition_number,
                 "enabled": (octet & 0x80) > 0,
-                "armed": (octet & 0x01) > 0,
+                "armed": is_armed,
                 "firing": (octet & 0x04) > 0,
                 "fired": (octet & 0x08) > 0,
                 "stay": (octet & 0x40) > 0
             }
+    
+    logger.warning("=== END PARTITION DEBUG ===")
 
     status["batteryStatus"] = battery_status_for(payload)
     status["tamper"] = (payload[71] & (1 << 0x01)) > 0
