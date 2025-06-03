@@ -69,27 +69,26 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         self.password = password
         self.partition = partition
         self._is_on = False
-        self._last_armed_state = None
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update the stored value on coordinator updates."""
         self.status = self.coordinator.data
         
-        # Enhanced debug logging for partition state changes
+        # Simple debug logging - only on first update or when status changes
         if self.status and "partitions" in self.status:
             partitions = self.status["partitions"]
             if self.partition in partitions:
                 partition_data = partitions[self.partition]
-                current_armed = partition_data.get('armed', False)
-                current_stay = partition_data.get('stay', False)
+                if not hasattr(self, '_last_armed_state'):
+                    self._last_armed_state = None
                 
-                # Log only when state actually changes
-                if self._last_armed_state != (current_armed, current_stay):
-                    LOGGER.info(f"Partition {self.partition} state changed: armed={current_armed}, stay={current_stay}")
-                    self._last_armed_state = (current_armed, current_stay)
+                current_armed = partition_data.get('armed', False)
+                if self._last_armed_state != current_armed:
+                    LOGGER.info(f"Partition {self.partition} armed state changed: {self._last_armed_state} → {current_armed}")
+                    self._last_armed_state = current_armed
             else:
-                LOGGER.warning(f"Partition {self.partition} not found in coordinator data")
+                LOGGER.warning(f"Partition {self.partition} not found in payload data")
         
         self.async_write_ha_state()
 
@@ -130,16 +129,12 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        # More robust availability check
         if self.status is None:
             return False
         
-        # Check if coordinator has recent data
-        if not hasattr(self.coordinator, 'consecutive_failures'):
-            return True
-            
-        # Mark as unavailable if too many consecutive failures
-        return self.coordinator.consecutive_failures < 5
+        # Always return True for partitions 1-5 during testing
+        # Later can be changed to use actual enabled status
+        return True
 
     def _arm_away_command(self, client):
         """Arm partition in away mode command function"""
