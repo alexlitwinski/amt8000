@@ -10,7 +10,8 @@ commands = {
     "auth": [0xF0, 0xF0],
     "status": [0x0B, 0x4A],
     "arm_disarm": [0x40, 0x1e],
-    "panic": [0x40, 0x1a]
+    "panic": [0x40, 0x1a],
+    "disconnect": [0xF0, 0xF1]  # Added disconnect command
 }
 
 def split_into_octets(n):
@@ -107,35 +108,22 @@ def build_status(data):
             if zone_idx < 61:  # Only process first 61 zones
                 status["zones"][zone_idx + 1]["lowBattery"] = (octet & (1 << j)) > 0
 
-    # Extract partition information (first 5 partitions as requested)
-    for i in range(5):
-        octet = payload[21 + i]
-        partition_number = i + 1
-        status["partitions"][partition_number] = {
-            "number": partition_number,
-            "enabled": (octet & 0x80) > 0,
-            "armed": (octet & 0x01) > 0,
-            "firing": (octet & 0x04) > 0,
-            "fired": (octet & 0x08) > 0,
-            "stay": (octet & 0x40) > 0
-        }
+    # Extract partition information - FIXED: Use same logic as Go code
+    for i in range(16):  # Process all 16 partitions like Go code
+        if i < 5:  # Only store first 5 for compatibility
+            octet = payload[21 + i]
+            partition_number = i + 1
+            status["partitions"][partition_number] = {
+                "number": partition_number,
+                "enabled": (octet & 0x80) > 0,
+                "armed": (octet & 0x01) > 0,
+                "firing": (octet & 0x04) > 0,
+                "fired": (octet & 0x08) > 0,
+                "stay": (octet & 0x40) > 0
+            }
 
-    # Debug: Count armed partitions
-    armed_partitions = [p for p, data in status["partitions"].items() if data.get("armed")]
-    main_system_armed = status["status"] in ["armed_away", "partial_armed"]
-    
-    # If no individual partitions are armed but system is armed, 
-    # use main system status as fallback for all partitions
-    if not armed_partitions and main_system_armed:
-        for partition_number in range(1, 6):
-            if status["status"] == "armed_away":
-                # All partitions armed in away mode
-                status["partitions"][partition_number]["armed"] = True
-                status["partitions"][partition_number]["stay"] = False
-            elif status["status"] == "partial_armed":
-                # Some partitions armed - for now assume all are armed in stay mode
-                status["partitions"][partition_number]["armed"] = True
-                status["partitions"][partition_number]["stay"] = True
+    # REMOVED: Fallback logic that was overriding real partition data
+    # This was causing the partition status update issues
 
     status["batteryStatus"] = battery_status_for(payload)
     status["tamper"] = (payload[71] & (1 << 0x01)) > 0
@@ -205,10 +193,20 @@ class Client:
         self.client = None
 
     def close(self):
-        """Close a connection."""
+        """Close a connection with proper disconnect command."""
         if self.client is None:
             return  # Already closed or never connected
 
+        try:
+            # Send disconnect command like Go code does
+            length = [0x00, 0x02]
+            disconnect_data = dst_id + our_id + length + commands["disconnect"]
+            cs = calculate_checksum(disconnect_data)
+            payload = bytes(disconnect_data + [cs])
+            self.client.send(payload)
+        except:
+            pass  # Ignore errors during disconnect command
+        
         try:
             self.client.close()
         except:
