@@ -18,7 +18,7 @@ from .isec2.client import Client as ISecClient
 LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
-SCAN_INTERVAL = timedelta(seconds=4)  # Changed from 10 to 4 seconds
+SCAN_INTERVAL = timedelta(seconds=4)
 
 
 async def async_setup_entry(
@@ -29,14 +29,18 @@ async def async_setup_entry(
     """Set up the zone sensors for amt-8000."""
     data = hass.data[DOMAIN][config_entry.entry_id]
     
-    # Create or reuse coordinator
+    # Reuse coordinator if it exists (created by alarm_control_panel)
     coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
     if coordinator_key not in hass.data:
         LOGGER.info("Creating new coordinator for zone sensors")
         isec_client = ISecClient(data["host"], data["port"])
         coordinator = AmtCoordinator(hass, isec_client, data["password"])
-        await coordinator.async_config_entry_first_refresh()
-        hass.data[coordinator_key] = coordinator
+        try:
+            await coordinator.async_config_entry_first_refresh()
+            hass.data[coordinator_key] = coordinator
+        except Exception as e:
+            LOGGER.error(f"Failed to initialize coordinator: {e}")
+            raise
     else:
         LOGGER.info("Reusing existing coordinator for zone sensors")
         coordinator = hass.data[coordinator_key]
@@ -110,12 +114,7 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        if self.status is None:
-            return False
-        
-        # Always return True for zones 1-61 during testing
-        # Later can be changed to use: zones.get(self.zone_number, {}).get("enabled", False)
-        return True
+        return self.coordinator.last_update_success and self.status is not None
 
     @property
     def icon(self) -> str:
