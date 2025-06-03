@@ -10,8 +10,7 @@ commands = {
     "auth": [0xF0, 0xF0],
     "status": [0x0B, 0x4A],
     "arm_disarm": [0x40, 0x1e],
-    "panic": [0x40, 0x1a],
-    "disconnect": [0xF0, 0xF1]
+    "panic": [0x40, 0x1a]
 }
 
 def split_into_octets(n):
@@ -189,20 +188,10 @@ class Client:
         self.client = None
 
     def close(self):
-        """Close a connection with proper disconnect command."""
+        """Close a connection."""
         if self.client is None:
             return  # Already closed or never connected
 
-        try:
-            # Send disconnect command like Go code does
-            length = [0x00, 0x02]
-            disconnect_data = dst_id + our_id + length + commands["disconnect"]
-            cs = calculate_checksum(disconnect_data)
-            payload = bytes(disconnect_data + [cs])
-            self.client.send(payload)
-        except:
-            pass  # Ignore errors during disconnect command
-        
         try:
             self.client.close()
         except:
