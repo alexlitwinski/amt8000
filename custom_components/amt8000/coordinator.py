@@ -26,8 +26,7 @@ class AmtCoordinator(DataUpdateCoordinator):
         self.password = password
         self.next_update = datetime.now()
         self.stored_status = None
-        self.attempt = 0  # Fixed typo: was "attemt"
-        self.consecutive_failures = 0  # Track consecutive failures
+        self.attempt = 0
         # Connection lock to prevent simultaneous connections
         self._connection_lock = asyncio.Lock()
 
@@ -42,12 +41,11 @@ class AmtCoordinator(DataUpdateCoordinator):
             try:
               LOGGER.debug("retrieving amt-8000 updated status...")
               
-              # Create fresh client instance for each status request
-              temp_client = ISecClient(self.isec_client.host, self.isec_client.port)
-              temp_client.connect()
-              temp_client.auth(self.password)
-              status = temp_client.status()
-              temp_client.close()  # Properly close with disconnect command
+              # Use the main client for status requests
+              self.isec_client.connect()
+              self.isec_client.auth(self.password)
+              status = self.isec_client.status()
+              self.isec_client.close()
               
               # Verify data structure
               partitions_count = len(status.get("partitions", {}))
@@ -73,50 +71,39 @@ class AmtCoordinator(DataUpdateCoordinator):
 
               self.stored_status = status
               self.attempt = 0
-              self.consecutive_failures = 0  # Reset failure counter
               self.next_update = datetime.now()
 
               return status
               
             except Exception as e:
-              self.consecutive_failures += 1
-              LOGGER.error(f"Coordinator update error (attempt {self.consecutive_failures}): {e}")
-              
-              # Exponential backoff with max limit
-              if self.consecutive_failures < 5:
-                  seconds = min(2 ** self.attempt, 30)  # Cap at 30 seconds
-              else:
-                  # After 5 consecutive failures, wait longer
-                  seconds = 60
-                  LOGGER.warning(f"Multiple consecutive failures ({self.consecutive_failures}), extending retry interval")
-              
+              LOGGER.error(f"Coordinator update error: {e}")
+              seconds = 2 ** self.attempt
               time_difference = timedelta(seconds=seconds)
               self.next_update = datetime.now() + time_difference
               LOGGER.warning(f"Next retry after {self.next_update}")
-              
-              # If we have stored status and failures aren't too many, return it
-              if self.stored_status is not None and self.consecutive_failures < 10:
-                  LOGGER.debug("Returning cached status due to temporary failure")
-                  return self.stored_status
-              
-              # Otherwise raise the exception to mark entities as unavailable
-              raise
+
+            finally:
+               try:
+                   self.isec_client.close()
+               except:
+                   pass
 
     async def async_execute_command(self, command_func, description="command"):
         """Execute a command with connection locking and retry logic."""
         async with self._connection_lock:
-            max_retries = 3  # Increased from 2
+            max_retries = 2
             for attempt in range(max_retries):
-                command_client = None
                 try:
                     LOGGER.debug(f"Executing {description} (attempt {attempt + 1})")
                     
-                    # Create a fresh client for commands with longer timeout
+                    # Create a fresh client for commands
                     command_client = ISecClient(self.isec_client.host, self.isec_client.port)
                     command_client.connect()
                     command_client.auth(self.password)
                     
                     result = command_func(command_client)
+                    
+                    command_client.close()
                     
                     # Log result for debugging
                     if result in ["armed", "disarmed"]:
@@ -126,6 +113,9 @@ class AmtCoordinator(DataUpdateCoordinator):
                     else:
                         LOGGER.warning(f"Command {description} returned unexpected result: {result}")
                     
+                    # Force coordinator refresh after command (successful or not)
+                    await self.async_request_refresh()
+                    
                     return result
                     
                 except Exception as e:
@@ -133,17 +123,4 @@ class AmtCoordinator(DataUpdateCoordinator):
                     if attempt == max_retries - 1:
                         LOGGER.error(f"All attempts failed for {description}")
                         raise
-                    await asyncio.sleep(0.5 * (attempt + 1))  # Progressive delay
-                    
-                finally:
-                    # Always close the command client
-                    if command_client is not None:
-                        try:
-                            command_client.close()
-                        except Exception as e:
-                            LOGGER.debug(f"Error closing command client: {e}")
-            
-            # Force coordinator refresh after command execution
-            # Small delay to let the alarm system process the command
-            await asyncio.sleep(0.2)
-            await self.async_request_refresh()
+                    await asyncio.sleep(0.5)
