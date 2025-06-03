@@ -20,7 +20,7 @@ class AmtCoordinator(DataUpdateCoordinator):
             hass,
             LOGGER,
             name="AMT-8000 Data Polling",
-            update_interval=timedelta(seconds=4),  # Changed from 10 to 4 seconds
+            update_interval=timedelta(seconds=4),
         )
         self.isec_client = isec_client
         self.password = password
@@ -38,14 +38,15 @@ class AmtCoordinator(DataUpdateCoordinator):
            return self.stored_status
 
         async with self._connection_lock:
+            temp_client = None
             try:
               LOGGER.debug("retrieving amt-8000 updated status...")
               
-              # Use the main client for status requests
-              self.isec_client.connect()
-              self.isec_client.auth(self.password)
-              status = self.isec_client.status()
-              self.isec_client.close()
+              # Always create a fresh client for status requests to avoid connection issues
+              temp_client = ISecClient(self.isec_client.host, self.isec_client.port)
+              temp_client.connect()
+              temp_client.auth(self.password)
+              status = temp_client.status()
               
               # Verify data structure
               partitions_count = len(status.get("partitions", {}))
@@ -77,21 +78,30 @@ class AmtCoordinator(DataUpdateCoordinator):
               
             except Exception as e:
               LOGGER.error(f"Coordinator update error: {e}")
-              seconds = 2 ** self.attempt
+              seconds = min(2 ** self.attempt, 60)  # Cap at 60 seconds
               time_difference = timedelta(seconds=seconds)
               self.next_update = datetime.now() + time_difference
               LOGGER.warning(f"Next retry after {self.next_update}")
+              
+              # Return stored status if available to avoid marking entities as unavailable
+              if self.stored_status:
+                  return self.stored_status
+              raise
 
             finally:
-               try:
-                   self.isec_client.close()
-               except:
-                   pass
+               # Always close the temporary client
+               if temp_client:
+                   try:
+                       temp_client.close()
+                   except:
+                       pass
 
     async def async_execute_command(self, command_func, description="command"):
         """Execute a command with connection locking and retry logic."""
         async with self._connection_lock:
             max_retries = 2
+            command_client = None
+            
             for attempt in range(max_retries):
                 try:
                     LOGGER.debug(f"Executing {description} (attempt {attempt + 1})")
@@ -103,8 +113,6 @@ class AmtCoordinator(DataUpdateCoordinator):
                     
                     result = command_func(command_client)
                     
-                    command_client.close()
-                    
                     # Log result for debugging
                     if result in ["armed", "disarmed"]:
                         LOGGER.info(f"Successfully executed {description}: {result}")
@@ -112,9 +120,6 @@ class AmtCoordinator(DataUpdateCoordinator):
                         LOGGER.error(f"Command {description} explicitly failed")
                     else:
                         LOGGER.warning(f"Command {description} returned unexpected result: {result}")
-                    
-                    # Force coordinator refresh after command (successful or not)
-                    await self.async_request_refresh()
                     
                     return result
                     
@@ -124,3 +129,17 @@ class AmtCoordinator(DataUpdateCoordinator):
                         LOGGER.error(f"All attempts failed for {description}")
                         raise
                     await asyncio.sleep(0.5)
+                    
+                finally:
+                    # Always close the command client
+                    if command_client:
+                        try:
+                            command_client.close()
+                        except:
+                            pass
+                    command_client = None
+            
+            # Force coordinator refresh after command execution
+            # Small delay to let the alarm system process the command
+            await asyncio.sleep(0.2)
+            await self.async_request_refresh()
