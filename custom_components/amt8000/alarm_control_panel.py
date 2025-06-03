@@ -21,7 +21,7 @@ from .isec2.client import Client as ISecClient
 LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
-SCAN_INTERVAL = timedelta(seconds=10)
+SCAN_INTERVAL = timedelta(seconds=4)  # Changed from 10 to 4 seconds
 
 
 async def async_setup_entry(
@@ -46,7 +46,7 @@ async def async_setup_entry(
     
     LOGGER.info('Setting up 5 alarm control panels (partitions 1-5)...')
     
-    # Create 5 partition entities (1-5) - CORRIGIDO: SEM isec_client
+    # Create 5 partition entities (1-5)
     panels = []
     for partition in range(1, 6):
         panels.append(AmtAlarmPanel(coordinator, data['password'], partition))
@@ -69,26 +69,27 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         self.password = password
         self.partition = partition
         self._is_on = False
+        self._last_armed_state = None
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update the stored value on coordinator updates."""
         self.status = self.coordinator.data
         
-        # Simple debug logging - only on first update or when status changes
+        # Enhanced debug logging for partition state changes
         if self.status and "partitions" in self.status:
             partitions = self.status["partitions"]
             if self.partition in partitions:
                 partition_data = partitions[self.partition]
-                if not hasattr(self, '_last_armed_state'):
-                    self._last_armed_state = None
-                
                 current_armed = partition_data.get('armed', False)
-                if self._last_armed_state != current_armed:
-                    LOGGER.info(f"Partition {self.partition} armed state changed: {self._last_armed_state} → {current_armed}")
-                    self._last_armed_state = current_armed
+                current_stay = partition_data.get('stay', False)
+                
+                # Log only when state actually changes
+                if self._last_armed_state != (current_armed, current_stay):
+                    LOGGER.info(f"Partition {self.partition} state changed: armed={current_armed}, stay={current_stay}")
+                    self._last_armed_state = (current_armed, current_stay)
             else:
-                LOGGER.warning(f"Partition {self.partition} not found in payload data")
+                LOGGER.warning(f"Partition {self.partition} not found in coordinator data")
         
         self.async_write_ha_state()
 
@@ -108,7 +109,8 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         if self.status is None:
             return "unknown"
 
-        if self.status['siren'] == True:
+        # Check for triggered state first
+        if self.status.get('siren', False):
             return "triggered"
 
         # Get partition-specific state from coordinator data
@@ -128,12 +130,16 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
+        # More robust availability check
         if self.status is None:
             return False
         
-        # Always return True for partitions 1-5 during testing
-        # Later can be changed to use actual enabled status
-        return True
+        # Check if coordinator has recent data
+        if not hasattr(self.coordinator, 'consecutive_failures'):
+            return True
+            
+        # Mark as unavailable if too many consecutive failures
+        return self.coordinator.consecutive_failures < 5
 
     def _arm_away_command(self, client):
         """Arm partition in away mode command function"""
