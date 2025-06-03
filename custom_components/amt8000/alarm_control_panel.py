@@ -21,7 +21,7 @@ from .isec2.client import Client as ISecClient
 LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
-SCAN_INTERVAL = timedelta(seconds=4)  # Changed from 10 to 4 seconds
+SCAN_INTERVAL = timedelta(seconds=4)
 
 
 async def async_setup_entry(
@@ -32,17 +32,19 @@ async def async_setup_entry(
     """Set up the entries for amt-8000."""
     data = hass.data[DOMAIN][config_entry.entry_id]
     
-    # Create or reuse coordinator
+    # Always create a fresh coordinator for alarm control panels to avoid issues
     coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
-    if coordinator_key not in hass.data:
-        LOGGER.info("Creating new coordinator for alarm control panels")
-        isec_client = ISecClient(data["host"], data["port"])
-        coordinator = AmtCoordinator(hass, isec_client, data["password"])
+    
+    LOGGER.info("Creating fresh coordinator for alarm control panels")
+    isec_client = ISecClient(data["host"], data["port"])
+    coordinator = AmtCoordinator(hass, isec_client, data["password"])
+    
+    try:
         await coordinator.async_config_entry_first_refresh()
         hass.data[coordinator_key] = coordinator
-    else:
-        LOGGER.info("Reusing existing coordinator for alarm control panels")
-        coordinator = hass.data[coordinator_key]
+    except Exception as e:
+        LOGGER.error(f"Failed to initialize coordinator: {e}")
+        raise
     
     LOGGER.info('Setting up 5 alarm control panels (partitions 1-5)...')
     
@@ -129,12 +131,7 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        if self.status is None:
-            return False
-        
-        # Always return True for partitions 1-5 during testing
-        # Later can be changed to use actual enabled status
-        return True
+        return self.coordinator.last_update_success and self.status is not None
 
     def _arm_away_command(self, client):
         """Arm partition in away mode command function"""
