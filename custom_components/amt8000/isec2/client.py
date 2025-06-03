@@ -11,7 +11,7 @@ commands = {
     "status": [0x0B, 0x4A],
     "arm_disarm": [0x40, 0x1e],
     "panic": [0x40, 0x1a],
-    "disconnect": [0xF0, 0xF1]  # Added disconnect command
+    "disconnect": [0xF0, 0xF1]
 }
 
 def split_into_octets(n):
@@ -108,22 +108,18 @@ def build_status(data):
             if zone_idx < 61:  # Only process first 61 zones
                 status["zones"][zone_idx + 1]["lowBattery"] = (octet & (1 << j)) > 0
 
-    # Extract partition information - FIXED: Use same logic as Go code
-    for i in range(16):  # Process all 16 partitions like Go code
-        if i < 5:  # Only store first 5 for compatibility
-            octet = payload[21 + i]
-            partition_number = i + 1
-            status["partitions"][partition_number] = {
-                "number": partition_number,
-                "enabled": (octet & 0x80) > 0,
-                "armed": (octet & 0x01) > 0,
-                "firing": (octet & 0x04) > 0,
-                "fired": (octet & 0x08) > 0,
-                "stay": (octet & 0x40) > 0
-            }
-
-    # REMOVED: Fallback logic that was overriding real partition data
-    # This was causing the partition status update issues
+    # Extract partition information - FIXED: Use byte 21 as starting point (same as Go code)
+    for i in range(5):  # Process partitions 1-5
+        octet = payload[21 + i]  # Start from byte 21 for partition 1 (same as Go)
+        partition_number = i + 1
+        status["partitions"][partition_number] = {
+            "number": partition_number,
+            "enabled": (octet & 0x80) > 0,
+            "armed": (octet & 0x01) > 0,
+            "firing": (octet & 0x04) > 0,
+            "fired": (octet & 0x08) > 0,
+            "stay": (octet & 0x40) > 0
+        }
 
     status["batteryStatus"] = battery_status_for(payload)
     status["tamper"] = (payload[71] & (1 << 0x01)) > 0
