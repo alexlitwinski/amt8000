@@ -1,10 +1,8 @@
 """Module for amt-8000 communication."""
 
 import socket
-import time
 
-# Timeout configurável - pode ser aumentado se necessário
-timeout = 5  # Aumentado de 2 para 5 segundos
+timeout = 2  # Set the timeout to 2 seconds
 
 dst_id = [0x00, 0x00]
 our_id = [0x8F, 0xFF]
@@ -195,47 +193,25 @@ class Client:
             return  # Already closed or never connected
 
         try:
-            self.client.shutdown(socket.SHUT_RDWR)
-        except:
-            pass  # Ignore errors during shutdown
-        
-        try:
             self.client.close()
         except:
             pass  # Ignore errors during close
         finally:
+            try:
+                self.client.detach()
+            except:
+                pass  # Ignore errors during detach
             self.client = None
 
     def connect(self):
-        """Create a new connection with improved error handling."""
+        """Create a new connection."""
         if self.client is not None:
             self.close()  # Close existing connection
             
         try:
             self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Configurações de socket para melhor comportamento
-            self.client.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.client.settimeout(timeout)
-            
-            # Conectar com timeout
             self.client.connect((self.host, self.port))
-            
-        except socket.timeout:
-            if self.client:
-                try:
-                    self.client.close()
-                except:
-                    pass
-                self.client = None
-            raise CommunicationError(f"Timeout connecting to {self.host}:{self.port}")
-        except ConnectionRefusedError:
-            if self.client:
-                try:
-                    self.client.close()
-                except:
-                    pass
-                self.client = None
-            raise CommunicationError(f"Connection refused by {self.host}:{self.port}")
         except Exception as e:
             if self.client:
                 try:
@@ -244,41 +220,6 @@ class Client:
                     pass
                 self.client = None
             raise CommunicationError(f"Failed to connect to {self.host}:{self.port} - {e}")
-
-    def _send_and_receive(self, payload, expected_min_length=9):
-        """Send payload and receive response with improved error handling."""
-        if self.client is None:
-            raise CommunicationError("Client not connected. Call Client.connect")
-
-        try:
-            # Send payload
-            bytes_sent = self.client.send(payload)
-            if bytes_sent != len(payload):
-                raise CommunicationError(f"Incomplete send: {bytes_sent}/{len(payload)} bytes")
-            
-            # Receive response
-            return_data = bytearray()
-            start_time = time.time()
-            
-            while len(return_data) < expected_min_length:
-                if time.time() - start_time > timeout:
-                    raise CommunicationError("Timeout waiting for response")
-                
-                try:
-                    chunk = self.client.recv(1024)
-                    if not chunk:
-                        raise CommunicationError("Connection closed by remote host")
-                    return_data.extend(chunk)
-                except socket.timeout:
-                    raise CommunicationError("Timeout receiving response")
-                
-                # Se recebemos dados, mas não o suficiente, continue no loop
-                # O timeout geral vai controlar se demorar muito
-            
-            return return_data
-            
-        except socket.error as e:
-            raise CommunicationError(f"Socket error during communication: {e}")
 
     def auth(self, password):
         """Create a authentication for the current connection."""
@@ -308,7 +249,13 @@ class Client:
         cs = calculate_checksum(data)
         payload = bytes(data + [cs])
 
-        return_data = self._send_and_receive(payload, 9)
+        self.client.send(payload)
+
+        return_data = bytearray()
+
+        data = self.client.recv(1024)
+
+        return_data.extend(data)
 
         result = return_data[8:9][0]
 
@@ -334,8 +281,11 @@ class Client:
         cs = calculate_checksum(status_data)
         payload = bytes(status_data + [cs])
 
-        # Expect longer response for status
-        return_data = self._send_and_receive(payload, 150)
+        return_data = bytearray()
+        self.client.send(payload)
+
+        data = self.client.recv(1024)
+        return_data.extend(data)
 
         status = build_status(return_data)
         return status
@@ -353,12 +303,16 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        return_data = self._send_and_receive(payload, 9)
+        return_data = bytearray()
+        self.client.send(payload)
+
+        data = self.client.recv(1024)
+        return_data.extend(data)
 
         if return_data[8] == 0x91:
             return 'armed'
 
-        return 'failed'
+        return 'not_armed'
 
     def disarm_system(self, partition):
         """Disarm the system partition (no code required)."""
@@ -373,12 +327,16 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        return_data = self._send_and_receive(payload, 9)
+        return_data = bytearray()
+        self.client.send(payload)
+
+        data = self.client.recv(1024)
+        return_data.extend(data)
 
         if return_data[8] == 0x91:
             return 'disarmed'
 
-        return 'failed'
+        return 'not_disarmed'
 
     def panic(self, type):
         """Trigger panic alarm."""
@@ -390,9 +348,13 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        return_data = self._send_and_receive(payload, 8)
+        return_data = bytearray()
+        self.client.send(payload)
+
+        data = self.client.recv(1024)
+        return_data.extend(data)
 
         if return_data[7] == 0xfe:
             return 'triggered'
 
-        return 'failed'
+        return 'not_triggered'
