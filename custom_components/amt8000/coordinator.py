@@ -43,15 +43,19 @@ class AmtCoordinator(DataUpdateCoordinator):
         async with self._connection_lock:
             # Try up to max_retries times
             for retry_attempt in range(self.max_retries):
-                temp_client = None
                 try:
                     LOGGER.debug(f"Retrieving amt-8000 status (attempt {retry_attempt + 1}/{self.max_retries})...")
                     
-                    # Always create a fresh client for status requests to avoid connection issues
-                    temp_client = ISecClient(self.isec_client.host, self.isec_client.port)
-                    temp_client.connect()
-                    temp_client.auth(self.password)
-                    status = temp_client.status()
+                    # Execute blocking operations in executor
+                    def _get_status():
+                        temp_client = ISecClient(self.isec_client.host, self.isec_client.port)
+                        temp_client.connect()
+                        temp_client.auth(self.password)
+                        status = temp_client.status()
+                        temp_client.close()
+                        return status
+                    
+                    status = await self.hass.async_add_executor_job(_get_status)
                     
                     # Verify data structure
                     partitions_count = len(status.get("partitions", {}))
@@ -101,29 +105,28 @@ class AmtCoordinator(DataUpdateCoordinator):
                         raise
 
                 finally:
-                   # Always close the temporary client
-                   if temp_client:
-                       try:
-                           temp_client.close()
-                       except:
-                           pass
+                   # temp_client is now handled inside _get_status
+                   pass
 
     async def async_execute_command(self, command_func, description="command"):
         """Execute a command with connection locking and enhanced retry logic."""
         async with self._connection_lock:
             # Try up to max_retries times
             for retry_attempt in range(self.max_retries):
-                command_client = None
                 
                 try:
                     LOGGER.debug(f"Executing {description} (attempt {retry_attempt + 1}/{self.max_retries})")
                     
-                    # Create a fresh client for commands
-                    command_client = ISecClient(self.isec_client.host, self.isec_client.port)
-                    command_client.connect()
-                    command_client.auth(self.password)
+                    # Execute blocking operations in executor
+                    def _execute_command():
+                        command_client = ISecClient(self.isec_client.host, self.isec_client.port)
+                        command_client.connect()
+                        command_client.auth(self.password)
+                        result = command_func(command_client)
+                        command_client.close()
+                        return result
                     
-                    result = command_func(command_client)
+                    result = await self.hass.async_add_executor_job(_execute_command)
                     
                     # Log result for debugging
                     if result in ["armed", "disarmed", "triggered"]:
@@ -157,13 +160,8 @@ class AmtCoordinator(DataUpdateCoordinator):
                         raise
                     
                 finally:
-                    # Always close the command client
-                    if command_client:
-                        try:
-                            command_client.close()
-                        except:
-                            pass
-                        command_client = None
+                    # command_client is now handled inside _execute_command
+                    pass
             
             # Force coordinator refresh after command execution
             # Small delay to let the alarm system process the command
