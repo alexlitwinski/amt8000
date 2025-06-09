@@ -220,9 +220,6 @@ class Client:
             # Conectar com timeout
             self.client.connect((self.host, self.port))
             
-            # Pequeno delay após conexão para estabilizar
-            time.sleep(0.1)
-            
         except socket.timeout:
             if self.client:
                 try:
@@ -275,9 +272,8 @@ class Client:
                 except socket.timeout:
                     raise CommunicationError("Timeout receiving response")
                 
-                # Se recebemos dados, mas não o suficiente, aguarde um pouco mais
-                if len(return_data) > 0 and len(return_data) < expected_min_length:
-                    time.sleep(0.05)
+                # Se recebemos dados, mas não o suficiente, continue no loop
+                # O timeout geral vai controlar se demorar muito
             
             return return_data
             
