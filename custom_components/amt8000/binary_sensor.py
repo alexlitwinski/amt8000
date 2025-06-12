@@ -34,7 +34,11 @@ async def async_setup_entry(
     if coordinator_key not in hass.data:
         LOGGER.info("Creating new coordinator for binary sensors")
         isec_client = ISecClient(data["host"], data["port"])
-        coordinator = AmtCoordinator(hass, isec_client, data["password"])
+        # Get update interval from config or options, default to 4 seconds if not present
+        update_interval = data.get("update_interval", 4)
+        if config_entry.options:
+            update_interval = config_entry.options.get("update_interval", update_interval)
+        coordinator = AmtCoordinator(hass, isec_client, data["password"], update_interval)
         try:
             await coordinator.async_config_entry_first_refresh()
             hass.data[coordinator_key] = coordinator
