@@ -95,11 +95,18 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         """Manage the options."""
         if user_input is not None:
+            _LOGGER.info(f"Saving options: {user_input}")
             # Update the config entry with new options
             return self.async_create_entry(title="", data=user_input)
 
         # Get current values
         current_update_interval = self.config_entry.data.get("update_interval", 4)
+        if self.config_entry.options and "update_interval" in self.config_entry.options:
+            current_update_interval = self.config_entry.options["update_interval"]
+        
+        _LOGGER.info(f"Current options flow - config data: {self.config_entry.data}")
+        _LOGGER.info(f"Current options flow - existing options: {self.config_entry.options}")
+        _LOGGER.info(f"Current options flow - using interval: {current_update_interval}")
         
         options_schema = vol.Schema(
             {
