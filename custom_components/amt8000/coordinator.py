@@ -29,6 +29,8 @@ class AmtCoordinator(DataUpdateCoordinator):
         self.attempt = 0
         # Connection lock to prevent simultaneous connections
         self._connection_lock = asyncio.Lock()
+        # Track connection failure state
+        self.connection_failed = False
 
     async def _async_update_data(self):
         """Retrieve the current status."""
@@ -73,11 +75,22 @@ class AmtCoordinator(DataUpdateCoordinator):
               self.stored_status = status
               self.attempt = 0
               self.next_update = datetime.now()
+              
+              # Mark connection as successful
+              if self.connection_failed:
+                  LOGGER.info("Connection recovered successfully")
+                  self.connection_failed = False
 
               return status
               
             except Exception as e:
               LOGGER.error(f"Coordinator update error: {e}")
+              
+              # Mark connection as failed
+              if not self.connection_failed:
+                  LOGGER.warning("Connection failure detected")
+                  self.connection_failed = True
+              
               seconds = min(2 ** self.attempt, 60)  # Cap at 60 seconds
               time_difference = timedelta(seconds=seconds)
               self.next_update = datetime.now() + time_difference
