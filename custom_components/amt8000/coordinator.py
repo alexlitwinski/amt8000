@@ -14,13 +14,26 @@ LOGGER = logging.getLogger(__name__)
 class AmtCoordinator(DataUpdateCoordinator):
     """Coordinate the amt status update."""
 
-    def __init__(self, hass, isec_client: ISecClient, password):
-        """Initialize my coordinator."""
+    def __init__(self, hass, isec_client: ISecClient, password, update_interval: int | float = 4):
+        """Initialize the coordinator.
+
+        Parameters
+        ----------
+        hass: HomeAssistant
+            The Home Assistant instance.
+        isec_client: ISecClient
+            Client used for talking to the alarm panel.
+        password: str
+            Password for authentication.
+        update_interval: int | float, optional
+            Poll interval in seconds. Defaults to ``4``.
+        """
+
         super().__init__(
             hass,
             LOGGER,
             name="AMT-8000 Data Polling",
-            update_interval=timedelta(seconds=4),
+            update_interval=timedelta(seconds=update_interval),
         )
         self.isec_client = isec_client
         self.password = password
