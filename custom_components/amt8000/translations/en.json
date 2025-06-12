@@ -13,7 +13,17 @@
                 "data": {
                     "host": "Host",
                     "password": "Password",
-                    "port": "Port"
+                    "port": "Port",
+                    "update_interval": "Update interval (seconds)"
+                }
+            }
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "data": {
+                    "update_interval": "Update interval (seconds)"
                 }
             }
         }
