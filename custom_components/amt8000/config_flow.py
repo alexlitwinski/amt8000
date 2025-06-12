@@ -16,6 +16,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required("host"): str,
         vol.Required("port", default=9009): int,
         vol.Required("password"): str,
+        vol.Required("update_interval", default=4): vol.All(vol.Coerce(int), vol.Range(min=1, max=300)),
     }
 )
 
@@ -53,6 +54,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    @staticmethod
+    def async_get_options_flow(config_entry):
+        """Get the options flow for this handler."""
+        return OptionsFlowHandler(config_entry)
+
     async def async_step_user(self, user_input=None):
         """Handle the initial step."""
         if user_input is None:
@@ -76,6 +82,37 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+        )
+
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for AMT-8000 integration."""
+
+    def __init__(self, config_entry):
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        """Manage the options."""
+        if user_input is not None:
+            # Update the config entry with new options
+            return self.async_create_entry(title="", data=user_input)
+
+        # Get current values
+        current_update_interval = self.config_entry.data.get("update_interval", 4)
+        
+        options_schema = vol.Schema(
+            {
+                vol.Required(
+                    "update_interval", 
+                    default=current_update_interval
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=300)),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=options_schema,
         )
 
 
