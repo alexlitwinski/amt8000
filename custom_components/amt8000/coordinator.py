@@ -3,6 +3,7 @@ import asyncio
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
+    UpdateFailed,
 )
 
 from .isec2.client import Client as ISecClient
@@ -112,7 +113,7 @@ class AmtCoordinator(DataUpdateCoordinator):
               # Return stored status if available to avoid marking entities as unavailable
               if self.stored_status:
                   return self.stored_status
-              raise
+              raise UpdateFailed(str(e))
 
             finally:
                # Always close the temporary client
