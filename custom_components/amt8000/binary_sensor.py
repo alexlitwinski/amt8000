@@ -44,7 +44,8 @@ async def async_setup_entry(
             hass.data[coordinator_key] = coordinator
         except Exception as e:
             LOGGER.error(f"Failed to initialize coordinator: {e}")
-            raise
+            hass.data[coordinator_key] = coordinator
+            coordinator.connection_failed = True
     else:
         LOGGER.info("Reusing existing coordinator for binary sensors")
         coordinator = hass.data[coordinator_key]
