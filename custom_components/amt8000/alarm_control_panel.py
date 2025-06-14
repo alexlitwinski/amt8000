@@ -48,7 +48,8 @@ async def async_setup_entry(
         hass.data[coordinator_key] = coordinator
     except Exception as e:
         LOGGER.error(f"Failed to initialize coordinator: {e}")
-        raise
+        hass.data[coordinator_key] = coordinator
+        coordinator.connection_failed = True
     
     LOGGER.info('Setting up 5 alarm control panels (partitions 1-5)...')
     
