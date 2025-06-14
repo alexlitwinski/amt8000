@@ -45,46 +45,6 @@ class AmtCoordinator(DataUpdateCoordinator):
         self._connection_lock = asyncio.Lock()
         # Track connection failure state
         self.connection_failed = False
-        # Single persistent client for all operations
-        self._persistent_client = None
-        self._last_successful_auth = 0
-
-    async def _ensure_client_ready(self):
-        """Ensure we have a working client connection."""
-        try:
-            # Create persistent client if needed
-            if self._persistent_client is None:
-                LOGGER.debug("Creating new persistent client connection")
-                self._persistent_client = ISecClient(self.isec_client.host, self.isec_client.port)
-            
-            # Check if we need to reconnect (after 30 seconds of inactivity)
-            current_time = time.time()
-            if current_time - self._last_successful_auth > 30:
-                LOGGER.debug("Connection may be stale, reconnecting...")
-                if self._persistent_client:
-                    try:
-                        self._persistent_client.close()
-                    except:
-                        pass
-                self._persistent_client = ISecClient(self.isec_client.host, self.isec_client.port)
-            
-            # Connect and authenticate
-            await self.hass.async_add_executor_job(self._persistent_client.connect)
-            await self.hass.async_add_executor_job(self._persistent_client.auth, self.password)
-            self._last_successful_auth = current_time
-            
-            return True
-            
-        except Exception as e:
-            LOGGER.error(f"Failed to ensure client ready: {e}")
-            # Clean up on failure
-            if self._persistent_client:
-                try:
-                    self._persistent_client.close()
-                except:
-                    pass
-                self._persistent_client = None
-            return False
 
     async def _async_update_data(self):
         """Retrieve the current status."""
@@ -94,33 +54,51 @@ class AmtCoordinator(DataUpdateCoordinator):
            return self.stored_status
 
         async with self._connection_lock:
+            temp_client = None
             try:
                 LOGGER.debug("retrieving amt-8000 updated status...")
                 
-                # Ensure client is ready
-                if not await self._ensure_client_ready():
-                    raise Exception("Failed to establish connection")
+                # Sempre cria um novo cliente para cada operação
+                temp_client = ISecClient(self.isec_client.host, self.isec_client.port)
                 
-                # Get status using persistent client
-                status = await self.hass.async_add_executor_job(self._persistent_client.status)
+                # Conecta com retry
+                max_connect_retries = 3
+                for retry in range(max_connect_retries):
+                    try:
+                        await self.hass.async_add_executor_job(temp_client.connect)
+                        break
+                    except Exception as e:
+                        if retry == max_connect_retries - 1:
+                            raise
+                        LOGGER.warning(f"Connection attempt {retry + 1} failed, retrying...")
+                        await asyncio.sleep(1)
                 
-                # Verify data structure
+                # Autentica
+                await self.hass.async_add_executor_job(temp_client.auth, self.password)
+                
+                # Pequeno delay após auth
+                await asyncio.sleep(0.2)
+                
+                # Obtém status
+                status = await self.hass.async_add_executor_job(temp_client.status)
+                
+                # Verifica estrutura dos dados
                 partitions_count = len(status.get("partitions", {}))
                 zones_count = len(status.get("zones", {}))
                 LOGGER.debug(f"AMT-8000 status retrieved - Partitions: {partitions_count}, Zones: {zones_count}, System Status: {status.get('status', 'unknown')}")
                 
-                # Debug logging for partitions (only when changed)
+                # Debug logging para partições (apenas quando mudou)
                 if "partitions" in status:
                     enabled_partitions = [p for p, data in status["partitions"].items() if data.get("enabled")]
                     armed_partitions = [p for p, data in status["partitions"].items() if data.get("armed")]
                     
-                    # Only log if different from last known state
+                    # Apenas registra se diferente do último estado conhecido
                     current_state = (tuple(enabled_partitions), tuple(armed_partitions))
                     if not hasattr(self, '_last_partition_state') or self._last_partition_state != current_state:
                         LOGGER.info(f"Partition state changed - Enabled: {enabled_partitions}, Armed: {armed_partitions}")
                         self._last_partition_state = current_state
                 
-                # Debug logging for zones (reduced)
+                # Debug logging para zonas (reduzido)
                 if "zones" in status:
                     enabled_zones = [z for z, data in status["zones"].items() if data.get("enabled")]
                     open_zones = [z for z, data in status["zones"].items() if data.get("open") or data.get("violated")]
@@ -130,7 +108,7 @@ class AmtCoordinator(DataUpdateCoordinator):
                 self.attempt = 0
                 self.next_update = datetime.now()
                 
-                # Mark connection as successful
+                # Marca conexão como bem-sucedida
                 if self.connection_failed:
                     LOGGER.info("Connection recovered successfully")
                     self.connection_failed = False
@@ -140,46 +118,55 @@ class AmtCoordinator(DataUpdateCoordinator):
             except Exception as e:
                 LOGGER.error(f"Coordinator update error: {e}")
                 
-                # Mark connection as failed
+                # Marca conexão como falha
                 if not self.connection_failed:
                     LOGGER.warning("Connection failure detected")
                     self.connection_failed = True
                 
-                # Clean up persistent client on error
-                if self._persistent_client:
-                    try:
-                        self._persistent_client.close()
-                    except:
-                        pass
-                    self._persistent_client = None
-                
-                seconds = min(2 ** self.attempt, 60)  # Cap at 60 seconds
+                seconds = min(2 ** self.attempt, 60)  # Máximo de 60 segundos
                 time_difference = timedelta(seconds=seconds)
                 self.next_update = datetime.now() + time_difference
                 LOGGER.warning(f"Next retry after {self.next_update}")
                 
-                # Return stored status if available to avoid marking entities as unavailable
+                # Retorna status armazenado se disponível para evitar marcar entidades como indisponíveis
                 if self.stored_status:
                     return self.stored_status
                 raise
+
+            finally:
+                # Sempre fecha o cliente temporário
+                if temp_client:
+                    try:
+                        await self.hass.async_add_executor_job(temp_client.close)
+                    except Exception as e:
+                        LOGGER.debug(f"Error closing temporary client: {e}")
 
     async def async_execute_command(self, command_func, description="command"):
         """Execute a command with connection locking and retry logic."""
         async with self._connection_lock:
             max_retries = 2
+            command_client = None
             
             for attempt in range(max_retries):
                 try:
                     LOGGER.debug(f"Executing {description} (attempt {attempt + 1})")
                     
-                    # Ensure client is ready
-                    if not await self._ensure_client_ready():
-                        raise Exception("Failed to establish connection for command")
+                    # Cria um novo cliente para comandos
+                    command_client = ISecClient(self.isec_client.host, self.isec_client.port)
                     
-                    # Execute command using persistent client
-                    result = await self.hass.async_add_executor_job(command_func, self._persistent_client)
+                    # Conecta
+                    await self.hass.async_add_executor_job(command_client.connect)
                     
-                    # Log result for debugging
+                    # Autentica
+                    await self.hass.async_add_executor_job(command_client.auth, self.password)
+                    
+                    # Pequeno delay após auth
+                    await asyncio.sleep(0.2)
+                    
+                    # Executa o comando
+                    result = await self.hass.async_add_executor_job(command_func, command_client)
+                    
+                    # Registra resultado para debug
                     if result in ["armed", "disarmed"]:
                         LOGGER.info(f"Successfully executed {description}: {result}")
                     elif result == "failed":
@@ -187,37 +174,29 @@ class AmtCoordinator(DataUpdateCoordinator):
                     else:
                         LOGGER.warning(f"Command {description} returned unexpected result: {result}")
                     
-                    # Small delay after command to let alarm process it
-                    await asyncio.sleep(0.3)
-                    
-                    # Force refresh after successful command
-                    await self.async_request_refresh()
-                    
                     return result
                     
                 except Exception as e:
                     LOGGER.warning(f"Attempt {attempt + 1} failed for {description}: {e}")
-                    
-                    # Clean up persistent client on error
-                    if self._persistent_client:
-                        try:
-                            self._persistent_client.close()
-                        except:
-                            pass
-                        self._persistent_client = None
-                    
                     if attempt == max_retries - 1:
                         LOGGER.error(f"All attempts failed for {description}")
                         raise
                     await asyncio.sleep(0.5)
+                    
+                finally:
+                    # Sempre fecha o cliente de comando
+                    if command_client:
+                        try:
+                            await self.hass.async_add_executor_job(command_client.close)
+                        except Exception as e:
+                            LOGGER.debug(f"Error closing command client: {e}")
+                    command_client = None
+            
+            # Força atualização do coordinator após execução do comando
+            # Pequeno delay para deixar o sistema de alarme processar o comando
+            await asyncio.sleep(0.5)
+            await self.async_request_refresh()
 
     async def async_shutdown(self):
-        """Shutdown coordinator and close connections."""
-        async with self._connection_lock:
-            if self._persistent_client:
-                try:
-                    await self.hass.async_add_executor_job(self._persistent_client.close)
-                except:
-                    pass
-                self._persistent_client = None
+        """Shutdown coordinator."""
         await super().async_shutdown()
