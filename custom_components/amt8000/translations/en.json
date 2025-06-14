@@ -27,5 +27,12 @@
                 }
             }
         }
+    },
+    "entity": {
+        "binary_sensor": {
+            "connection_failure": {
+                "name": "Connection Failure"
+            }
+        }
     }
 }
