@@ -6,6 +6,7 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 
 import logging
+import asyncio
 
 from .isec2.client import Client as ISecClient
 
@@ -16,7 +17,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required("host"): str,
         vol.Required("port", default=9009): int,
         vol.Required("password"): str,
-        vol.Required("update_interval", default=4): vol.All(vol.Coerce(int), vol.Range(min=1, max=300)),
+        vol.Required("update_interval", default=10): vol.All(vol.Coerce(int), vol.Range(min=1, max=300)),
     }
 )
 
@@ -31,13 +32,40 @@ async def validate_input(hass: HomeAssistant, data):
         """Test connection in a separate thread to avoid blocking."""
         client = ISecClient(data["host"], data["port"])
         try:
-            client.connect()
-            client.auth(data["password"])
-            status = client.status()
-            client.close()
-            return {"title": f"AMT-8000 {data['host']}"}
+            # Tenta conectar com retry
+            max_retries = 3
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    _LOGGER.debug(f"Connection test attempt {attempt + 1}/{max_retries}")
+                    client.connect()
+                    client.auth(data["password"])
+                    status = client.status()
+                    client.close()
+                    
+                    # Aguarda um pouco antes de fechar para garantir que a central processe
+                    import time
+                    time.sleep(0.5)
+                    
+                    return {"title": f"AMT-8000 {data['host']}"}
+                    
+                except Exception as e:
+                    last_error = e
+                    _LOGGER.warning(f"Connection test attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(2)  # Aguarda 2 segundos entre tentativas
+                    
+            # Se todas as tentativas falharam
+            raise last_error
+                    
         except Exception as e:
-            client.close()
+            _LOGGER.error(f"Connection test failed after all attempts: {e}")
+            try:
+                client.close()
+            except:
+                pass
             raise e
     
     # Run the blocking connection test in an executor
@@ -100,7 +128,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         # Get current values
-        current_update_interval = self.config_entry.data.get("update_interval", 4)
+        current_update_interval = self.config_entry.data.get("update_interval", 10)
         if self.config_entry.options and "update_interval" in self.config_entry.options:
             current_update_interval = self.config_entry.options["update_interval"]
         
