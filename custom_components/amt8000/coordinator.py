@@ -1,6 +1,5 @@
 from datetime import timedelta, datetime
 import asyncio
-import time
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -56,90 +55,72 @@ class AmtCoordinator(DataUpdateCoordinator):
         async with self._connection_lock:
             temp_client = None
             try:
-                LOGGER.debug("retrieving amt-8000 updated status...")
-                
-                # Sempre cria um novo cliente para cada operação
-                temp_client = ISecClient(self.isec_client.host, self.isec_client.port)
-                
-                # Conecta com retry
-                max_connect_retries = 3
-                for retry in range(max_connect_retries):
-                    try:
-                        await self.hass.async_add_executor_job(temp_client.connect)
-                        break
-                    except Exception as e:
-                        if retry == max_connect_retries - 1:
-                            raise
-                        LOGGER.warning(f"Connection attempt {retry + 1} failed, retrying...")
-                        await asyncio.sleep(1)
-                
-                # Autentica
-                await self.hass.async_add_executor_job(temp_client.auth, self.password)
-                
-                # Pequeno delay após auth
-                await asyncio.sleep(0.2)
-                
-                # Obtém status
-                status = await self.hass.async_add_executor_job(temp_client.status)
-                
-                # Verifica estrutura dos dados
-                partitions_count = len(status.get("partitions", {}))
-                zones_count = len(status.get("zones", {}))
-                LOGGER.debug(f"AMT-8000 status retrieved - Partitions: {partitions_count}, Zones: {zones_count}, System Status: {status.get('status', 'unknown')}")
-                
-                # Debug logging para partições (apenas quando mudou)
-                if "partitions" in status:
-                    enabled_partitions = [p for p, data in status["partitions"].items() if data.get("enabled")]
-                    armed_partitions = [p for p, data in status["partitions"].items() if data.get("armed")]
-                    
-                    # Apenas registra se diferente do último estado conhecido
-                    current_state = (tuple(enabled_partitions), tuple(armed_partitions))
-                    if not hasattr(self, '_last_partition_state') or self._last_partition_state != current_state:
-                        LOGGER.info(f"Partition state changed - Enabled: {enabled_partitions}, Armed: {armed_partitions}")
-                        self._last_partition_state = current_state
-                
-                # Debug logging para zonas (reduzido)
-                if "zones" in status:
-                    enabled_zones = [z for z, data in status["zones"].items() if data.get("enabled")]
-                    open_zones = [z for z, data in status["zones"].items() if data.get("open") or data.get("violated")]
-                    LOGGER.debug(f"Enabled zones: {len(enabled_zones)}, Open/violated zones: {open_zones}")
+              LOGGER.debug("retrieving amt-8000 updated status...")
+              
+              # Always create a fresh client for status requests to avoid connection issues
+              temp_client = ISecClient(self.isec_client.host, self.isec_client.port)
+              temp_client.connect()
+              temp_client.auth(self.password)
+              status = temp_client.status()
+              
+              # Verify data structure
+              partitions_count = len(status.get("partitions", {}))
+              zones_count = len(status.get("zones", {}))
+              LOGGER.debug(f"AMT-8000 status retrieved - Partitions: {partitions_count}, Zones: {zones_count}, System Status: {status.get('status', 'unknown')}")
+              
+              # Debug logging for partitions (only when changed)
+              if "partitions" in status:
+                  enabled_partitions = [p for p, data in status["partitions"].items() if data.get("enabled")]
+                  armed_partitions = [p for p, data in status["partitions"].items() if data.get("armed")]
+                  
+                  # Only log if different from last known state
+                  current_state = (tuple(enabled_partitions), tuple(armed_partitions))
+                  if not hasattr(self, '_last_partition_state') or self._last_partition_state != current_state:
+                      LOGGER.info(f"Partition state changed - Enabled: {enabled_partitions}, Armed: {armed_partitions}")
+                      self._last_partition_state = current_state
+              
+              # Debug logging for zones (reduced)
+              if "zones" in status:
+                  enabled_zones = [z for z, data in status["zones"].items() if data.get("enabled")]
+                  open_zones = [z for z, data in status["zones"].items() if data.get("open") or data.get("violated")]
+                  LOGGER.debug(f"Enabled zones: {len(enabled_zones)}, Open/violated zones: {open_zones}")
 
-                self.stored_status = status
-                self.attempt = 0
-                self.next_update = datetime.now()
-                
-                # Marca conexão como bem-sucedida
-                if self.connection_failed:
-                    LOGGER.info("Connection recovered successfully")
-                    self.connection_failed = False
+              self.stored_status = status
+              self.attempt = 0
+              self.next_update = datetime.now()
+              
+              # Mark connection as successful
+              if self.connection_failed:
+                  LOGGER.info("Connection recovered successfully")
+                  self.connection_failed = False
 
-                return status
-                
+              return status
+              
             except Exception as e:
-                LOGGER.error(f"Coordinator update error: {e}")
-                
-                # Marca conexão como falha
-                if not self.connection_failed:
-                    LOGGER.warning("Connection failure detected")
-                    self.connection_failed = True
-                
-                seconds = min(2 ** self.attempt, 60)  # Máximo de 60 segundos
-                time_difference = timedelta(seconds=seconds)
-                self.next_update = datetime.now() + time_difference
-                LOGGER.warning(f"Next retry after {self.next_update}")
-                
-                # Retorna status armazenado se disponível para evitar marcar entidades como indisponíveis
-                if self.stored_status:
-                    return self.stored_status
-                raise
+              LOGGER.error(f"Coordinator update error: {e}")
+              
+              # Mark connection as failed
+              if not self.connection_failed:
+                  LOGGER.warning("Connection failure detected")
+                  self.connection_failed = True
+              
+              seconds = min(2 ** self.attempt, 60)  # Cap at 60 seconds
+              time_difference = timedelta(seconds=seconds)
+              self.next_update = datetime.now() + time_difference
+              LOGGER.warning(f"Next retry after {self.next_update}")
+              
+              # Return stored status if available to avoid marking entities as unavailable
+              if self.stored_status:
+                  return self.stored_status
+              raise
 
             finally:
-                # Sempre fecha o cliente temporário
-                if temp_client:
-                    try:
-                        await self.hass.async_add_executor_job(temp_client.close)
-                    except Exception as e:
-                        LOGGER.debug(f"Error closing temporary client: {e}")
+               # Always close the temporary client
+               if temp_client:
+                   try:
+                       temp_client.close()
+                   except:
+                       pass
 
     async def async_execute_command(self, command_func, description="command"):
         """Execute a command with connection locking and retry logic."""
@@ -151,22 +132,14 @@ class AmtCoordinator(DataUpdateCoordinator):
                 try:
                     LOGGER.debug(f"Executing {description} (attempt {attempt + 1})")
                     
-                    # Cria um novo cliente para comandos
+                    # Create a fresh client for commands
                     command_client = ISecClient(self.isec_client.host, self.isec_client.port)
+                    command_client.connect()
+                    command_client.auth(self.password)
                     
-                    # Conecta
-                    await self.hass.async_add_executor_job(command_client.connect)
+                    result = command_func(command_client)
                     
-                    # Autentica
-                    await self.hass.async_add_executor_job(command_client.auth, self.password)
-                    
-                    # Pequeno delay após auth
-                    await asyncio.sleep(0.2)
-                    
-                    # Executa o comando
-                    result = await self.hass.async_add_executor_job(command_func, command_client)
-                    
-                    # Registra resultado para debug
+                    # Log result for debugging
                     if result in ["armed", "disarmed"]:
                         LOGGER.info(f"Successfully executed {description}: {result}")
                     elif result == "failed":
@@ -184,19 +157,15 @@ class AmtCoordinator(DataUpdateCoordinator):
                     await asyncio.sleep(0.5)
                     
                 finally:
-                    # Sempre fecha o cliente de comando
+                    # Always close the command client
                     if command_client:
                         try:
-                            await self.hass.async_add_executor_job(command_client.close)
-                        except Exception as e:
-                            LOGGER.debug(f"Error closing command client: {e}")
+                            command_client.close()
+                        except:
+                            pass
                     command_client = None
             
-            # Força atualização do coordinator após execução do comando
-            # Pequeno delay para deixar o sistema de alarme processar o comando
-            await asyncio.sleep(0.5)
+            # Force coordinator refresh after command execution
+            # Small delay to let the alarm system process the command
+            await asyncio.sleep(0.2)
             await self.async_request_refresh()
-
-    async def async_shutdown(self):
-        """Shutdown coordinator."""
-        await super().async_shutdown()

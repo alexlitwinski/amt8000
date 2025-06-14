@@ -44,8 +44,7 @@ async def async_setup_entry(
             hass.data[coordinator_key] = coordinator
         except Exception as e:
             LOGGER.error(f"Failed to initialize coordinator: {e}")
-            hass.data[coordinator_key] = coordinator
-            coordinator.connection_failed = True
+            raise
     else:
         LOGGER.info("Reusing existing coordinator for binary sensors")
         coordinator = hass.data[coordinator_key]
@@ -67,15 +66,16 @@ class AmtConnectionFailureSensor(CoordinatorEntity, BinarySensorEntity):
         """Initialize the connection failure sensor."""
         super().__init__(coordinator)
         self._attr_device_class = BinarySensorDeviceClass.PROBLEM
-        self._attr_has_entity_name = True
-        self._attr_translation_key = "connection_failure"
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update the stored value on coordinator updates."""
         self.async_write_ha_state()
 
-
+    @property
+    def name(self) -> str:
+        """Return the name of the entity."""
+        return "AMT-8000 Falha na Conexão"
 
     @property
     def unique_id(self) -> str | None:
