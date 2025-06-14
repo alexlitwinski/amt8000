@@ -1,8 +1,10 @@
 """Module for amt-8000 communication."""
 
 import socket
+import time
+import threading
 
-timeout = 2  # Set the timeout to 2 seconds
+timeout = 5  # Aumentado para 5 segundos
 
 dst_id = [0x00, 0x00]
 our_id = [0x8F, 0xFF]
@@ -13,13 +15,17 @@ commands = {
     "panic": [0x40, 0x1a]
 }
 
+# Global connection pool to prevent multiple connections
+_connection_pool = {}
+_connection_lock = threading.Lock()
+
 def split_into_octets(n):
-   if 0 <= n <= 0xFFFF:
-       high_byte = (n >> 8) & 0xFF
-       low_byte = n & 0xFF
-       return [high_byte, low_byte]
-   else:
-       raise ValueError("Número fora do intervalo (0 a 65535)")
+    if 0 <= n <= 0xFFFF:
+        high_byte = (n >> 8) & 0xFF
+        low_byte = n & 0xFF
+        return [high_byte, low_byte]
+    else:
+        raise ValueError("Número fora do intervalo (0 a 65535)")
 
 def calculate_checksum(buffer):
     """Calculate a checksum for a given array of bytes."""
@@ -186,6 +192,8 @@ class Client:
         self.device_type = device_type
         self.software_version = software_version
         self.client = None
+        self._authenticated = False
+        self._last_activity = 0
 
     def close(self):
         """Close a connection."""
@@ -193,25 +201,43 @@ class Client:
             return  # Already closed or never connected
 
         try:
+            # Send a small delay before closing to ensure clean shutdown
+            time.sleep(0.1)
+            self.client.shutdown(socket.SHUT_RDWR)
+        except:
+            pass  # Ignore errors during shutdown
+            
+        try:
             self.client.close()
         except:
             pass  # Ignore errors during close
         finally:
-            try:
-                self.client.detach()
-            except:
-                pass  # Ignore errors during detach
             self.client = None
+            self._authenticated = False
 
     def connect(self):
         """Create a new connection."""
         if self.client is not None:
-            self.close()  # Close existing connection
+            # Check if we need to reconnect (after 30 seconds of inactivity)
+            if time.time() - self._last_activity > 30:
+                self.close()
+            else:
+                # Connection still valid, just return
+                return
             
         try:
             self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.client.settimeout(timeout)
+            
+            # Enable TCP keepalive
+            self.client.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            
+            # Set TCP_NODELAY to disable Nagle's algorithm
+            self.client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            
             self.client.connect((self.host, self.port))
+            self._last_activity = time.time()
+            
         except Exception as e:
             if self.client:
                 try:
@@ -225,6 +251,10 @@ class Client:
         """Create a authentication for the current connection."""
         if self.client is None:
             raise CommunicationError("Client not connected. Call Client.connect")
+
+        # If already authenticated and connection is fresh, skip
+        if self._authenticated and (time.time() - self._last_activity < 30):
+            return True
 
         pass_array = []
         for char in password:
@@ -249,27 +279,41 @@ class Client:
         cs = calculate_checksum(data)
         payload = bytes(data + [cs])
 
-        self.client.send(payload)
+        try:
+            self.client.send(payload)
+            self._last_activity = time.time()
 
-        return_data = bytearray()
+            return_data = bytearray()
 
-        data = self.client.recv(1024)
+            # Add small delay to ensure the panel processes the request
+            time.sleep(0.05)
+            
+            data = self.client.recv(1024)
+            self._last_activity = time.time()
 
-        return_data.extend(data)
+            return_data.extend(data)
 
-        result = return_data[8:9][0]
+            if len(return_data) < 9:
+                raise CommunicationError("Invalid authentication response")
 
-        if result == 0:
-            return True
-        if result == 1:
-            raise AuthError("Invalid password")
-        if result == 2:
-            raise AuthError("Incorrect software version")
-        if result == 3:
-            raise AuthError("Alarm panel will call back")
-        if result == 4:
-            raise AuthError("Waiting for user permission")
-        raise CommunicationError("Unknown payload response for authentication")
+            result = return_data[8:9][0]
+
+            if result == 0:
+                self._authenticated = True
+                return True
+            if result == 1:
+                raise AuthError("Invalid password")
+            if result == 2:
+                raise AuthError("Incorrect software version")
+            if result == 3:
+                raise AuthError("Alarm panel will call back")
+            if result == 4:
+                raise AuthError("Waiting for user permission")
+            raise CommunicationError("Unknown payload response for authentication")
+            
+        except socket.error as e:
+            self.close()
+            raise CommunicationError(f"Socket error during authentication: {e}")
 
     def status(self):
         """Return the current status."""
@@ -281,14 +325,24 @@ class Client:
         cs = calculate_checksum(status_data)
         payload = bytes(status_data + [cs])
 
-        return_data = bytearray()
-        self.client.send(payload)
+        try:
+            return_data = bytearray()
+            self.client.send(payload)
+            self._last_activity = time.time()
 
-        data = self.client.recv(1024)
-        return_data.extend(data)
+            # Add small delay to ensure the panel processes the request
+            time.sleep(0.05)
 
-        status = build_status(return_data)
-        return status
+            data = self.client.recv(1024)
+            self._last_activity = time.time()
+            return_data.extend(data)
+
+            status = build_status(return_data)
+            return status
+            
+        except socket.error as e:
+            self.close()
+            raise CommunicationError(f"Socket error during status request: {e}")
 
     def arm_system(self, partition):
         """Arm the system partition (no code required)."""
@@ -303,16 +357,26 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        return_data = bytearray()
-        self.client.send(payload)
+        try:
+            return_data = bytearray()
+            self.client.send(payload)
+            self._last_activity = time.time()
 
-        data = self.client.recv(1024)
-        return_data.extend(data)
+            # Add small delay to ensure the panel processes the request
+            time.sleep(0.05)
 
-        if return_data[8] == 0x91:
-            return 'armed'
+            data = self.client.recv(1024)
+            self._last_activity = time.time()
+            return_data.extend(data)
 
-        return 'not_armed'
+            if len(return_data) > 8 and return_data[8] == 0x91:
+                return 'armed'
+
+            return 'not_armed'
+            
+        except socket.error as e:
+            self.close()
+            raise CommunicationError(f"Socket error during arm command: {e}")
 
     def disarm_system(self, partition):
         """Disarm the system partition (no code required)."""
@@ -327,16 +391,26 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        return_data = bytearray()
-        self.client.send(payload)
+        try:
+            return_data = bytearray()
+            self.client.send(payload)
+            self._last_activity = time.time()
 
-        data = self.client.recv(1024)
-        return_data.extend(data)
+            # Add small delay to ensure the panel processes the request
+            time.sleep(0.05)
 
-        if return_data[8] == 0x91:
-            return 'disarmed'
+            data = self.client.recv(1024)
+            self._last_activity = time.time()
+            return_data.extend(data)
 
-        return 'not_disarmed'
+            if len(return_data) > 8 and return_data[8] == 0x91:
+                return 'disarmed'
+
+            return 'not_disarmed'
+            
+        except socket.error as e:
+            self.close()
+            raise CommunicationError(f"Socket error during disarm command: {e}")
 
     def panic(self, type):
         """Trigger panic alarm."""
@@ -348,13 +422,23 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        return_data = bytearray()
-        self.client.send(payload)
+        try:
+            return_data = bytearray()
+            self.client.send(payload)
+            self._last_activity = time.time()
 
-        data = self.client.recv(1024)
-        return_data.extend(data)
+            # Add small delay to ensure the panel processes the request
+            time.sleep(0.05)
 
-        if return_data[7] == 0xfe:
-            return 'triggered'
+            data = self.client.recv(1024)
+            self._last_activity = time.time()
+            return_data.extend(data)
 
-        return 'not_triggered'
+            if len(return_data) > 7 and return_data[7] == 0xfe:
+                return 'triggered'
+
+            return 'not_triggered'
+            
+        except socket.error as e:
+            self.close()
+            raise CommunicationError(f"Socket error during panic command: {e}")
