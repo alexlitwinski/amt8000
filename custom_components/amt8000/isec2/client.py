@@ -1,13 +1,8 @@
 """Module for amt-8000 communication."""
 
 import socket
-import time
-import threading
-import logging
 
-LOGGER = logging.getLogger(__name__)
-
-timeout = 10  # Aumentado para 10 segundos
+timeout = 2  # Set the timeout to 2 seconds
 
 dst_id = [0x00, 0x00]
 our_id = [0x8F, 0xFF]
@@ -19,12 +14,12 @@ commands = {
 }
 
 def split_into_octets(n):
-    if 0 <= n <= 0xFFFF:
-        high_byte = (n >> 8) & 0xFF
-        low_byte = n & 0xFF
-        return [high_byte, low_byte]
-    else:
-        raise ValueError("Número fora do intervalo (0 a 65535)")
+   if 0 <= n <= 0xFFFF:
+       high_byte = (n >> 8) & 0xFF
+       low_byte = n & 0xFF
+       return [high_byte, low_byte]
+   else:
+       raise ValueError("Número fora do intervalo (0 a 65535)")
 
 def calculate_checksum(buffer):
     """Calculate a checksum for a given array of bytes."""
@@ -197,37 +192,27 @@ class Client:
         if self.client is None:
             return  # Already closed or never connected
 
-        LOGGER.debug(f"Closing connection to {self.host}:{self.port}")
-        
         try:
-            # Delay antes de fechar para garantir que comandos anteriores sejam processados
-            time.sleep(0.2)
             self.client.close()
-        except Exception as e:
-            LOGGER.debug(f"Error closing connection: {e}")
+        except:
+            pass  # Ignore errors during close
         finally:
+            try:
+                self.client.detach()
+            except:
+                pass  # Ignore errors during detach
             self.client = None
 
     def connect(self):
         """Create a new connection."""
-        # Sempre fecha conexão existente antes de criar nova
         if self.client is not None:
-            self.close()
-            time.sleep(0.5)  # Delay entre fechar e reabrir
+            self.close()  # Close existing connection
             
         try:
-            LOGGER.debug(f"Connecting to {self.host}:{self.port}")
             self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.client.settimeout(timeout)
             self.client.connect((self.host, self.port))
-            
-            # Delay após conectar para estabilizar
-            time.sleep(0.1)
-            
-            LOGGER.debug(f"Successfully connected to {self.host}:{self.port}")
-            
         except Exception as e:
-            LOGGER.error(f"Failed to connect to {self.host}:{self.port} - {e}")
             if self.client:
                 try:
                     self.client.close()
@@ -264,44 +249,27 @@ class Client:
         cs = calculate_checksum(data)
         payload = bytes(data + [cs])
 
-        try:
-            LOGGER.debug("Sending auth command")
-            self.client.send(payload)
+        self.client.send(payload)
 
-            # Aguarda resposta com timeout maior
-            time.sleep(0.2)
-            
-            self.client.settimeout(5)  # Timeout específico para auth
-            data = self.client.recv(1024)
-            self.client.settimeout(timeout)  # Restaura timeout padrão
+        return_data = bytearray()
 
-            return_data = bytearray()
-            return_data.extend(data)
+        data = self.client.recv(1024)
 
-            if len(return_data) < 9:
-                raise CommunicationError(f"Invalid authentication response, only {len(return_data)} bytes received")
+        return_data.extend(data)
 
-            result = return_data[8]
+        result = return_data[8:9][0]
 
-            if result == 0:
-                LOGGER.debug("Authentication successful")
-                return True
-            if result == 1:
-                raise AuthError("Invalid password")
-            if result == 2:
-                raise AuthError("Incorrect software version")
-            if result == 3:
-                raise AuthError("Alarm panel will call back")
-            if result == 4:
-                raise AuthError("Waiting for user permission")
-            raise CommunicationError(f"Unknown auth response code: {result}")
-            
-        except socket.timeout:
-            LOGGER.error("Authentication timeout")
-            raise CommunicationError("Authentication timeout - no response from alarm")
-        except socket.error as e:
-            LOGGER.error(f"Socket error during authentication: {e}")
-            raise CommunicationError(f"Socket error during authentication: {e}")
+        if result == 0:
+            return True
+        if result == 1:
+            raise AuthError("Invalid password")
+        if result == 2:
+            raise AuthError("Incorrect software version")
+        if result == 3:
+            raise AuthError("Alarm panel will call back")
+        if result == 4:
+            raise AuthError("Waiting for user permission")
+        raise CommunicationError("Unknown payload response for authentication")
 
     def status(self):
         """Return the current status."""
@@ -313,37 +281,14 @@ class Client:
         cs = calculate_checksum(status_data)
         payload = bytes(status_data + [cs])
 
-        try:
-            LOGGER.debug("Sending status command")
-            self.client.send(payload)
+        return_data = bytearray()
+        self.client.send(payload)
 
-            # Aguarda resposta
-            time.sleep(0.1)
+        data = self.client.recv(1024)
+        return_data.extend(data)
 
-            data = self.client.recv(1024)
-            return_data = bytearray()
-            return_data.extend(data)
-            
-            # Pode precisar receber mais dados
-            while len(return_data) < 156:  # Tamanho esperado da resposta
-                try:
-                    self.client.settimeout(1)
-                    more_data = self.client.recv(1024)
-                    if not more_data:
-                        break
-                    return_data.extend(more_data)
-                except socket.timeout:
-                    break
-                finally:
-                    self.client.settimeout(timeout)
-
-            LOGGER.debug(f"Status response received: {len(return_data)} bytes")
-            status = build_status(return_data)
-            return status
-            
-        except socket.error as e:
-            LOGGER.error(f"Socket error during status request: {e}")
-            raise CommunicationError(f"Socket error during status request: {e}")
+        status = build_status(return_data)
+        return status
 
     def arm_system(self, partition):
         """Arm the system partition (no code required)."""
@@ -358,26 +303,16 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        try:
-            LOGGER.debug(f"Sending arm command for partition {partition}")
-            self.client.send(payload)
+        return_data = bytearray()
+        self.client.send(payload)
 
-            time.sleep(0.1)
+        data = self.client.recv(1024)
+        return_data.extend(data)
 
-            data = self.client.recv(1024)
-            return_data = bytearray()
-            return_data.extend(data)
+        if return_data[8] == 0x91:
+            return 'armed'
 
-            if len(return_data) > 8 and return_data[8] == 0x91:
-                LOGGER.debug(f"Partition {partition} armed successfully")
-                return 'armed'
-
-            LOGGER.warning(f"Arm command failed, response: {return_data.hex() if return_data else 'empty'}")
-            return 'not_armed'
-            
-        except socket.error as e:
-            LOGGER.error(f"Socket error during arm command: {e}")
-            raise CommunicationError(f"Socket error during arm command: {e}")
+        return 'not_armed'
 
     def disarm_system(self, partition):
         """Disarm the system partition (no code required)."""
@@ -392,26 +327,16 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        try:
-            LOGGER.debug(f"Sending disarm command for partition {partition}")
-            self.client.send(payload)
+        return_data = bytearray()
+        self.client.send(payload)
 
-            time.sleep(0.1)
+        data = self.client.recv(1024)
+        return_data.extend(data)
 
-            data = self.client.recv(1024)
-            return_data = bytearray()
-            return_data.extend(data)
+        if return_data[8] == 0x91:
+            return 'disarmed'
 
-            if len(return_data) > 8 and return_data[8] == 0x91:
-                LOGGER.debug(f"Partition {partition} disarmed successfully")
-                return 'disarmed'
-
-            LOGGER.warning(f"Disarm command failed, response: {return_data.hex() if return_data else 'empty'}")
-            return 'not_disarmed'
-            
-        except socket.error as e:
-            LOGGER.error(f"Socket error during disarm command: {e}")
-            raise CommunicationError(f"Socket error during disarm command: {e}")
+        return 'not_disarmed'
 
     def panic(self, type):
         """Trigger panic alarm."""
@@ -423,23 +348,13 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        try:
-            LOGGER.debug(f"Sending panic command type {type}")
-            self.client.send(payload)
+        return_data = bytearray()
+        self.client.send(payload)
 
-            time.sleep(0.1)
+        data = self.client.recv(1024)
+        return_data.extend(data)
 
-            data = self.client.recv(1024)
-            return_data = bytearray()
-            return_data.extend(data)
+        if return_data[7] == 0xfe:
+            return 'triggered'
 
-            if len(return_data) > 7 and return_data[7] == 0xfe:
-                LOGGER.debug("Panic triggered successfully")
-                return 'triggered'
-
-            LOGGER.warning(f"Panic command failed, response: {return_data.hex() if return_data else 'empty'}")
-            return 'not_triggered'
-            
-        except socket.error as e:
-            LOGGER.error(f"Socket error during panic command: {e}")
-            raise CommunicationError(f"Socket error during panic command: {e}")
+        return 'not_triggered'
