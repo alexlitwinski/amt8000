@@ -3,8 +3,11 @@
 import socket
 import time
 import threading
+import logging
 
-timeout = 5  # Aumentado para 5 segundos
+LOGGER = logging.getLogger(__name__)
+
+timeout = 10  # Aumentado para 10 segundos
 
 dst_id = [0x00, 0x00]
 our_id = [0x8F, 0xFF]
@@ -14,10 +17,6 @@ commands = {
     "arm_disarm": [0x40, 0x1e],
     "panic": [0x40, 0x1a]
 }
-
-# Global connection pool to prevent multiple connections
-_connection_pool = {}
-_connection_lock = threading.Lock()
 
 def split_into_octets(n):
     if 0 <= n <= 0xFFFF:
@@ -192,53 +191,43 @@ class Client:
         self.device_type = device_type
         self.software_version = software_version
         self.client = None
-        self._authenticated = False
-        self._last_activity = 0
 
     def close(self):
         """Close a connection."""
         if self.client is None:
             return  # Already closed or never connected
 
+        LOGGER.debug(f"Closing connection to {self.host}:{self.port}")
+        
         try:
-            # Send a small delay before closing to ensure clean shutdown
-            time.sleep(0.1)
-            self.client.shutdown(socket.SHUT_RDWR)
-        except:
-            pass  # Ignore errors during shutdown
-            
-        try:
+            # Delay antes de fechar para garantir que comandos anteriores sejam processados
+            time.sleep(0.2)
             self.client.close()
-        except:
-            pass  # Ignore errors during close
+        except Exception as e:
+            LOGGER.debug(f"Error closing connection: {e}")
         finally:
             self.client = None
-            self._authenticated = False
 
     def connect(self):
         """Create a new connection."""
+        # Sempre fecha conexão existente antes de criar nova
         if self.client is not None:
-            # Check if we need to reconnect (after 30 seconds of inactivity)
-            if time.time() - self._last_activity > 30:
-                self.close()
-            else:
-                # Connection still valid, just return
-                return
+            self.close()
+            time.sleep(0.5)  # Delay entre fechar e reabrir
             
         try:
+            LOGGER.debug(f"Connecting to {self.host}:{self.port}")
             self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.client.settimeout(timeout)
-            
-            # Enable TCP keepalive
-            self.client.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            
-            # Set TCP_NODELAY to disable Nagle's algorithm
-            self.client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            
             self.client.connect((self.host, self.port))
-            self._last_activity = time.time()
+            
+            # Delay após conectar para estabilizar
+            time.sleep(0.1)
+            
+            LOGGER.debug(f"Successfully connected to {self.host}:{self.port}")
             
         except Exception as e:
+            LOGGER.error(f"Failed to connect to {self.host}:{self.port} - {e}")
             if self.client:
                 try:
                     self.client.close()
@@ -251,10 +240,6 @@ class Client:
         """Create a authentication for the current connection."""
         if self.client is None:
             raise CommunicationError("Client not connected. Call Client.connect")
-
-        # If already authenticated and connection is fresh, skip
-        if self._authenticated and (time.time() - self._last_activity < 30):
-            return True
 
         pass_array = []
         for char in password:
@@ -280,26 +265,26 @@ class Client:
         payload = bytes(data + [cs])
 
         try:
+            LOGGER.debug("Sending auth command")
             self.client.send(payload)
-            self._last_activity = time.time()
+
+            # Aguarda resposta com timeout maior
+            time.sleep(0.2)
+            
+            self.client.settimeout(5)  # Timeout específico para auth
+            data = self.client.recv(1024)
+            self.client.settimeout(timeout)  # Restaura timeout padrão
 
             return_data = bytearray()
-
-            # Add small delay to ensure the panel processes the request
-            time.sleep(0.05)
-            
-            data = self.client.recv(1024)
-            self._last_activity = time.time()
-
             return_data.extend(data)
 
             if len(return_data) < 9:
-                raise CommunicationError("Invalid authentication response")
+                raise CommunicationError(f"Invalid authentication response, only {len(return_data)} bytes received")
 
-            result = return_data[8:9][0]
+            result = return_data[8]
 
             if result == 0:
-                self._authenticated = True
+                LOGGER.debug("Authentication successful")
                 return True
             if result == 1:
                 raise AuthError("Invalid password")
@@ -309,10 +294,13 @@ class Client:
                 raise AuthError("Alarm panel will call back")
             if result == 4:
                 raise AuthError("Waiting for user permission")
-            raise CommunicationError("Unknown payload response for authentication")
+            raise CommunicationError(f"Unknown auth response code: {result}")
             
+        except socket.timeout:
+            LOGGER.error("Authentication timeout")
+            raise CommunicationError("Authentication timeout - no response from alarm")
         except socket.error as e:
-            self.close()
+            LOGGER.error(f"Socket error during authentication: {e}")
             raise CommunicationError(f"Socket error during authentication: {e}")
 
     def status(self):
@@ -326,22 +314,35 @@ class Client:
         payload = bytes(status_data + [cs])
 
         try:
-            return_data = bytearray()
+            LOGGER.debug("Sending status command")
             self.client.send(payload)
-            self._last_activity = time.time()
 
-            # Add small delay to ensure the panel processes the request
-            time.sleep(0.05)
+            # Aguarda resposta
+            time.sleep(0.1)
 
             data = self.client.recv(1024)
-            self._last_activity = time.time()
+            return_data = bytearray()
             return_data.extend(data)
+            
+            # Pode precisar receber mais dados
+            while len(return_data) < 156:  # Tamanho esperado da resposta
+                try:
+                    self.client.settimeout(1)
+                    more_data = self.client.recv(1024)
+                    if not more_data:
+                        break
+                    return_data.extend(more_data)
+                except socket.timeout:
+                    break
+                finally:
+                    self.client.settimeout(timeout)
 
+            LOGGER.debug(f"Status response received: {len(return_data)} bytes")
             status = build_status(return_data)
             return status
             
         except socket.error as e:
-            self.close()
+            LOGGER.error(f"Socket error during status request: {e}")
             raise CommunicationError(f"Socket error during status request: {e}")
 
     def arm_system(self, partition):
@@ -358,24 +359,24 @@ class Client:
         payload = bytes(arm_data + [cs])
 
         try:
-            return_data = bytearray()
+            LOGGER.debug(f"Sending arm command for partition {partition}")
             self.client.send(payload)
-            self._last_activity = time.time()
 
-            # Add small delay to ensure the panel processes the request
-            time.sleep(0.05)
+            time.sleep(0.1)
 
             data = self.client.recv(1024)
-            self._last_activity = time.time()
+            return_data = bytearray()
             return_data.extend(data)
 
             if len(return_data) > 8 and return_data[8] == 0x91:
+                LOGGER.debug(f"Partition {partition} armed successfully")
                 return 'armed'
 
+            LOGGER.warning(f"Arm command failed, response: {return_data.hex() if return_data else 'empty'}")
             return 'not_armed'
             
         except socket.error as e:
-            self.close()
+            LOGGER.error(f"Socket error during arm command: {e}")
             raise CommunicationError(f"Socket error during arm command: {e}")
 
     def disarm_system(self, partition):
@@ -392,24 +393,24 @@ class Client:
         payload = bytes(arm_data + [cs])
 
         try:
-            return_data = bytearray()
+            LOGGER.debug(f"Sending disarm command for partition {partition}")
             self.client.send(payload)
-            self._last_activity = time.time()
 
-            # Add small delay to ensure the panel processes the request
-            time.sleep(0.05)
+            time.sleep(0.1)
 
             data = self.client.recv(1024)
-            self._last_activity = time.time()
+            return_data = bytearray()
             return_data.extend(data)
 
             if len(return_data) > 8 and return_data[8] == 0x91:
+                LOGGER.debug(f"Partition {partition} disarmed successfully")
                 return 'disarmed'
 
+            LOGGER.warning(f"Disarm command failed, response: {return_data.hex() if return_data else 'empty'}")
             return 'not_disarmed'
             
         except socket.error as e:
-            self.close()
+            LOGGER.error(f"Socket error during disarm command: {e}")
             raise CommunicationError(f"Socket error during disarm command: {e}")
 
     def panic(self, type):
@@ -423,22 +424,22 @@ class Client:
         payload = bytes(arm_data + [cs])
 
         try:
-            return_data = bytearray()
+            LOGGER.debug(f"Sending panic command type {type}")
             self.client.send(payload)
-            self._last_activity = time.time()
 
-            # Add small delay to ensure the panel processes the request
-            time.sleep(0.05)
+            time.sleep(0.1)
 
             data = self.client.recv(1024)
-            self._last_activity = time.time()
+            return_data = bytearray()
             return_data.extend(data)
 
             if len(return_data) > 7 and return_data[7] == 0xfe:
+                LOGGER.debug("Panic triggered successfully")
                 return 'triggered'
 
+            LOGGER.warning(f"Panic command failed, response: {return_data.hex() if return_data else 'empty'}")
             return 'not_triggered'
             
         except socket.error as e:
-            self.close()
+            LOGGER.error(f"Socket error during panic command: {e}")
             raise CommunicationError(f"Socket error during panic command: {e}")
