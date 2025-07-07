@@ -28,9 +28,11 @@ async def async_setup_entry(
     """Set up the zone sensors for amt-8000."""
     data = hass.data[DOMAIN][config_entry.entry_id]
     
-    # Reuse coordinator if it exists (created by alarm_control_panel)
+    # Use coordinator created by alarm_control_panel (it's always set up first)
     coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
     if coordinator_key not in hass.data:
+        # This should not happen in normal flow as alarm_control_panel creates it first
+        LOGGER.warning("Coordinator not found - this may indicate setup order issue")
         LOGGER.info("Creating new coordinator for zone sensors")
         isec_client = ISecClient(data["host"], data["port"])
         # Get update interval from config or options, default to 4 seconds if not present
@@ -43,9 +45,14 @@ async def async_setup_entry(
             hass.data[coordinator_key] = coordinator
         except Exception as e:
             LOGGER.error(f"Failed to initialize coordinator: {e}")
+            # Try to cleanup the failed coordinator
+            try:
+                await coordinator.async_cleanup()
+            except:
+                pass
             raise
     else:
-        LOGGER.info("Reusing existing coordinator for zone sensors")
+        LOGGER.info("Using existing coordinator for zone sensors")
         coordinator = hass.data[coordinator_key]
     
     LOGGER.info('Setting up 61 zone sensors (zones 1-61)...')
