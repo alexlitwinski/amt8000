@@ -35,8 +35,30 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    LOGGER.info(f"Starting unload process for entry {entry.entry_id}")
+    
+    # Force cleanup of coordinator before unloading platforms
+    coordinator_key = f"{DOMAIN}_coordinator_{entry.entry_id}"
+    if coordinator_key in hass.data:
+        coordinator = hass.data[coordinator_key]
+        LOGGER.info("Performing coordinator cleanup...")
+        try:
+            await coordinator.async_cleanup()
+        except Exception as e:
+            LOGGER.error(f"Error during coordinator cleanup: {e}")
+        
+        # Remove coordinator from hass.data
+        hass.data.pop(coordinator_key, None)
+        LOGGER.info("Coordinator removed from hass.data")
+
+    # Unload all platforms
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        # Remove entry data only after successful unload
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        LOGGER.info(f"Successfully unloaded entry {entry.entry_id}")
+    else:
+        LOGGER.error(f"Failed to unload platforms for entry {entry.entry_id}")
 
     return unload_ok
