@@ -32,8 +32,19 @@ async def async_setup_entry(
     """Set up the entries for amt-8000."""
     data = hass.data[DOMAIN][config_entry.entry_id]
     
-    # Always create a fresh coordinator for alarm control panels to avoid issues
+    # Force cleanup and recreation of coordinator to ensure fresh state
     coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
+    
+    # If coordinator exists, clean it up first
+    if coordinator_key in hass.data:
+        LOGGER.info("Found existing coordinator, performing cleanup before recreation")
+        old_coordinator = hass.data[coordinator_key]
+        try:
+            await old_coordinator.async_cleanup()
+        except Exception as e:
+            LOGGER.warning(f"Error cleaning up old coordinator: {e}")
+        # Remove from hass.data
+        hass.data.pop(coordinator_key, None)
     
     LOGGER.info("Creating fresh coordinator for alarm control panels")
     isec_client = ISecClient(data["host"], data["port"])
@@ -46,8 +57,14 @@ async def async_setup_entry(
     try:
         await coordinator.async_config_entry_first_refresh()
         hass.data[coordinator_key] = coordinator
+        LOGGER.info("Fresh coordinator created and initialized successfully")
     except Exception as e:
-        LOGGER.error(f"Failed to initialize coordinator: {e}")
+        LOGGER.error(f"Failed to initialize fresh coordinator: {e}")
+        # Try to cleanup the failed coordinator
+        try:
+            await coordinator.async_cleanup()
+        except:
+            pass
         raise
     
     LOGGER.info('Setting up 5 alarm control panels (partitions 1-5)...')
