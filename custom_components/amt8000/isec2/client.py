@@ -188,20 +188,40 @@ class Client:
         self.client = None
 
     def close(self):
-        """Close a connection."""
+        """Close a connection aggressively."""
         if self.client is None:
             return  # Already closed or never connected
 
         try:
-            self.client.close()
-        except:
-            pass  # Ignore errors during close
-        finally:
+            # Set a very short timeout for closure operations
             try:
-                self.client.detach()
+                self.client.settimeout(0.1)
+            except:
+                pass
+            
+            # Try to shutdown the connection gracefully first
+            try:
+                self.client.shutdown(socket.SHUT_RDWR)
+            except:
+                pass  # Ignore errors during shutdown
+            
+            # Force close the socket
+            try:
+                self.client.close()
+            except:
+                pass  # Ignore errors during close
+                
+        except:
+            pass  # Ignore any errors during the entire close process
+        finally:
+            # Always try to detach and set to None
+            try:
+                if hasattr(self.client, 'detach'):
+                    self.client.detach()
             except:
                 pass  # Ignore errors during detach
-            self.client = None
+            finally:
+                self.client = None
 
     def connect(self):
         """Create a new connection."""
@@ -215,10 +235,9 @@ class Client:
         except Exception as e:
             if self.client:
                 try:
-                    self.client.close()
+                    self.close()
                 except:
                     pass
-                self.client = None
             raise CommunicationError(f"Failed to connect to {self.host}:{self.port} - {e}")
 
     def auth(self, password):
