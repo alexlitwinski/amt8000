@@ -6,17 +6,19 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.components.alarm_control_panel import AlarmControlPanelEntity, AlarmControlPanelEntityFeature
+from homeassistant.components.alarm_control_panel import (
+    AlarmControlPanelEntity, 
+    AlarmControlPanelEntityFeature,
+    AlarmControlPanelState
+)
 
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
 )
 
-
 from .const import DOMAIN
 from .coordinator import AmtCoordinator
 from .isec2.client import Client as ISecClient
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -74,7 +76,7 @@ async def async_setup_entry(
     for partition in range(1, 6):
         panels.append(AmtAlarmPanel(coordinator, data['password'], partition))
     
-    async_add_entities(panels)
+    async_add_entities(panels, True)  # Add update_before_add=True
 
 
 class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
@@ -126,14 +128,14 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         return f"amt8000.partition_{self.partition}"
 
     @property
-    def state(self) -> str:
-        """Return the state of the entity."""
+    def alarm_state(self) -> AlarmControlPanelState:
+        """Return the alarm state using the new API."""
         if self.status is None:
-            return "unknown"
+            return AlarmControlPanelState.UNKNOWN
 
         # Check for triggered state first
         if self.status.get('siren', False):
-            return "triggered"
+            return AlarmControlPanelState.TRIGGERED
 
         # Get partition-specific state from coordinator data
         partitions = self.status.get("partitions", {})
@@ -142,12 +144,30 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         if partition_data.get("armed", False):
             self._is_on = True
             if partition_data.get("stay", False):
-                return "armed_home"
+                return AlarmControlPanelState.ARMED_HOME
             else:
-                return "armed_away"
+                return AlarmControlPanelState.ARMED_AWAY
         else:
             self._is_on = False
+            return AlarmControlPanelState.DISARMED
+
+    @property
+    def state(self) -> str:
+        """Return the state of the entity for backward compatibility."""
+        # Map the new enum to string for backward compatibility
+        alarm_state = self.alarm_state
+        if alarm_state == AlarmControlPanelState.UNKNOWN:
+            return "unknown"
+        elif alarm_state == AlarmControlPanelState.TRIGGERED:
+            return "triggered"
+        elif alarm_state == AlarmControlPanelState.ARMED_HOME:
+            return "armed_home"
+        elif alarm_state == AlarmControlPanelState.ARMED_AWAY:
+            return "armed_away"
+        elif alarm_state == AlarmControlPanelState.DISARMED:
             return "disarmed"
+        else:
+            return "unknown"
 
     @property
     def available(self) -> bool:
