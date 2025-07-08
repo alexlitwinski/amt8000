@@ -15,9 +15,13 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 from .coordinator import AmtCoordinator
+from .isec2.client import Client as ISecClient
 
 
 LOGGER = logging.getLogger(__name__)
+
+PARALLEL_UPDATES = 0
+SCAN_INTERVAL = timedelta(seconds=4)
 
 
 async def async_setup_entry(
@@ -26,16 +30,49 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the entries for amt-8000."""
-    # Retrieve the coordinator from hass.data
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
-    password = hass.data[DOMAIN][config_entry.entry_id]["config"]["password"]
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    
+    # Force cleanup and recreation of coordinator to ensure fresh state
+    coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
+    
+    # If coordinator exists, clean it up first
+    if coordinator_key in hass.data:
+        LOGGER.info("Found existing coordinator, performing cleanup before recreation")
+        old_coordinator = hass.data[coordinator_key]
+        try:
+            await old_coordinator.async_cleanup()
+        except Exception as e:
+            LOGGER.warning(f"Error cleaning up old coordinator: {e}")
+        # Remove from hass.data
+        hass.data.pop(coordinator_key, None)
+    
+    LOGGER.info("Creating fresh coordinator for alarm control panels")
+    isec_client = ISecClient(data["host"], data["port"])
+    # Get update interval from config or options, default to 4 seconds if not present
+    update_interval = data.get("update_interval", 4)
+    if config_entry.options:
+        update_interval = config_entry.options.get("update_interval", update_interval)
+    coordinator = AmtCoordinator(hass, isec_client, data["password"], update_interval)
+    
+    try:
+        await coordinator.async_config_entry_first_refresh()
+        hass.data[coordinator_key] = coordinator
+        LOGGER.info("Fresh coordinator created and initialized successfully")
+    except Exception as e:
+        LOGGER.error(f"Failed to initialize fresh coordinator: {e}")
+        # Try to cleanup the failed coordinator
+        try:
+            await coordinator.async_cleanup()
+        except:
+            pass
+        raise
     
     LOGGER.info('Setting up 5 alarm control panels (partitions 1-5)...')
     
     # Create 5 partition entities (1-5)
     panels = []
     for partition in range(1, 6):
-        panels.append(AmtAlarmPanel(coordinator, password, partition))
+        panels.append(AmtAlarmPanel(coordinator, data['password'], partition))
     
     async_add_entities(panels)
 
