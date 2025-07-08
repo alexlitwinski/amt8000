@@ -1,5 +1,4 @@
 """Defines the zone sensors for amt-8000."""
-from datetime import timedelta
 import logging
 from typing import Any
 
@@ -12,12 +11,8 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
-from .coordinator import AmtCoordinator
-from .isec2.client import Client as ISecClient
 
 LOGGER = logging.getLogger(__name__)
-
-PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
@@ -26,34 +21,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the zone sensors for amt-8000."""
-    data = hass.data[DOMAIN][config_entry.entry_id]
-    
-    # Use coordinator created by alarm_control_panel (it's always set up first)
-    coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
-    if coordinator_key not in hass.data:
-        # This should not happen in normal flow as alarm_control_panel creates it first
-        LOGGER.warning("Coordinator not found - this may indicate setup order issue")
-        LOGGER.info("Creating new coordinator for zone sensors")
-        isec_client = ISecClient(data["host"], data["port"])
-        # Get update interval from config or options, default to 4 seconds if not present
-        update_interval = data.get("update_interval", 4)
-        if config_entry.options:
-            update_interval = config_entry.options.get("update_interval", update_interval)
-        coordinator = AmtCoordinator(hass, isec_client, data["password"], update_interval)
-        try:
-            await coordinator.async_config_entry_first_refresh()
-            hass.data[coordinator_key] = coordinator
-        except Exception as e:
-            LOGGER.error(f"Failed to initialize coordinator: {e}")
-            # Try to cleanup the failed coordinator
-            try:
-                await coordinator.async_cleanup()
-            except:
-                pass
-            raise
-    else:
-        LOGGER.info("Using existing coordinator for zone sensors")
-        coordinator = hass.data[coordinator_key]
+    # Retrieve the coordinator from hass.data, which is now set up in __init__.py
+    coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
     
     LOGGER.info('Setting up 61 zone sensors (zones 1-61)...')
     
@@ -72,27 +41,11 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
         """Initialize the zone sensor."""
         super().__init__(coordinator)
         self.zone_number = zone_number
-        self.status = None
         self._attr_device_class = "motion"
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update the stored value on coordinator updates."""
-        self.status = self.coordinator.data
-        
-        # Simple debug logging for first few zones only
-        if self.status and "zones" in self.status and self.zone_number <= 5:
-            zones = self.status["zones"]
-            if self.zone_number in zones:
-                zone_data = zones[self.zone_number]
-                if not hasattr(self, '_last_state'):
-                    self._last_state = None
-                
-                current_open = zone_data.get('open', False) or zone_data.get('violated', False)
-                if self._last_state != current_open:
-                    LOGGER.info(f"Zone {self.zone_number} state changed: {self._last_state} → {current_open}")
-                    self._last_state = current_open
-        
         self.async_write_ha_state()
 
     @property
@@ -108,11 +61,12 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
     @property
     def state(self) -> str:
         """Return the state of the zone."""
-        if self.status is None:
+        if self.coordinator.data is None:
             return "unknown"
         
         # Get zone state from coordinator data
-        zones = self.status.get("zones", {})
+        status = self.coordinator.data
+        zones = status.get("zones", {})
         zone_data = zones.get(self.zone_number, {})
         
         # A zone is considered "open" if it's either open or violated
@@ -124,7 +78,7 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        return self.coordinator.last_update_success and self.status is not None
+        return self.coordinator.last_update_success and self.coordinator.data is not None
 
     @property
     def icon(self) -> str:
@@ -136,10 +90,11 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
-        if self.status is None:
+        if self.coordinator.data is None:
             return {"zone_number": self.zone_number}
         
-        zones = self.status.get("zones", {})
+        status = self.coordinator.data
+        zones = status.get("zones", {})
         zone_data = zones.get(self.zone_number, {})
         
         return {
