@@ -1,4 +1,5 @@
 """Defines the binary sensors for amt-8000."""
+from datetime import timedelta
 import logging
 from typing import Any
 
@@ -11,8 +12,13 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
+from .coordinator import AmtCoordinator
+from .isec2.client import Client as ISecClient
 
 LOGGER = logging.getLogger(__name__)
+
+PARALLEL_UPDATES = 0
+SCAN_INTERVAL = timedelta(seconds=4)
 
 
 async def async_setup_entry(
@@ -21,8 +27,34 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the binary sensors for amt-8000."""
-    # Retrieve the coordinator from hass.data
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    
+    # Use coordinator created by alarm_control_panel (it's always set up first)
+    coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
+    if coordinator_key not in hass.data:
+        # This should not happen in normal flow as alarm_control_panel creates it first
+        LOGGER.warning("Coordinator not found - this may indicate setup order issue")
+        LOGGER.info("Creating new coordinator for binary sensors")
+        isec_client = ISecClient(data["host"], data["port"])
+        # Get update interval from config or options, default to 4 seconds if not present
+        update_interval = data.get("update_interval", 4)
+        if config_entry.options:
+            update_interval = config_entry.options.get("update_interval", update_interval)
+        coordinator = AmtCoordinator(hass, isec_client, data["password"], update_interval)
+        try:
+            await coordinator.async_config_entry_first_refresh()
+            hass.data[coordinator_key] = coordinator
+        except Exception as e:
+            LOGGER.error(f"Failed to initialize coordinator: {e}")
+            # Try to cleanup the failed coordinator
+            try:
+                await coordinator.async_cleanup()
+            except:
+                pass
+            raise
+    else:
+        LOGGER.info("Using existing coordinator for binary sensors")
+        coordinator = hass.data[coordinator_key]
     
     LOGGER.info('Setting up connection failure binary sensor...')
     

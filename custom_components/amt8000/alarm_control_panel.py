@@ -1,15 +1,12 @@
 """Defines the alarm control panels for amt-8000."""
+from datetime import timedelta
 import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.components.alarm_control_panel import (
-    AlarmControlPanelEntity,
-    AlarmControlPanelEntityFeature,
-    AlarmControlPanelState, # <- Importa o novo formato de estado
-)
+from homeassistant.components.alarm_control_panel import AlarmControlPanelEntity, AlarmControlPanelEntityFeature
 
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -18,9 +15,13 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 from .coordinator import AmtCoordinator
+from .isec2.client import Client as ISecClient
 
 
 LOGGER = logging.getLogger(__name__)
+
+PARALLEL_UPDATES = 0
+SCAN_INTERVAL = timedelta(seconds=4)
 
 
 async def async_setup_entry(
@@ -29,17 +30,49 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the entries for amt-8000."""
-    # Retrieve the coordinator and config from hass.data
-    entry_data = hass.data[DOMAIN][config_entry.entry_id]
-    coordinator = entry_data["coordinator"]
-    password = entry_data["config"]["password"]
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    
+    # Force cleanup and recreation of coordinator to ensure fresh state
+    coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
+    
+    # If coordinator exists, clean it up first
+    if coordinator_key in hass.data:
+        LOGGER.info("Found existing coordinator, performing cleanup before recreation")
+        old_coordinator = hass.data[coordinator_key]
+        try:
+            await old_coordinator.async_cleanup()
+        except Exception as e:
+            LOGGER.warning(f"Error cleaning up old coordinator: {e}")
+        # Remove from hass.data
+        hass.data.pop(coordinator_key, None)
+    
+    LOGGER.info("Creating fresh coordinator for alarm control panels")
+    isec_client = ISecClient(data["host"], data["port"])
+    # Get update interval from config or options, default to 4 seconds if not present
+    update_interval = data.get("update_interval", 4)
+    if config_entry.options:
+        update_interval = config_entry.options.get("update_interval", update_interval)
+    coordinator = AmtCoordinator(hass, isec_client, data["password"], update_interval)
+    
+    try:
+        await coordinator.async_config_entry_first_refresh()
+        hass.data[coordinator_key] = coordinator
+        LOGGER.info("Fresh coordinator created and initialized successfully")
+    except Exception as e:
+        LOGGER.error(f"Failed to initialize fresh coordinator: {e}")
+        # Try to cleanup the failed coordinator
+        try:
+            await coordinator.async_cleanup()
+        except:
+            pass
+        raise
     
     LOGGER.info('Setting up 5 alarm control panels (partitions 1-5)...')
     
     # Create 5 partition entities (1-5)
     panels = []
     for partition in range(1, 6):
-        panels.append(AmtAlarmPanel(coordinator, password, partition))
+        panels.append(AmtAlarmPanel(coordinator, data['password'], partition))
     
     async_add_entities(panels)
 
@@ -55,14 +88,31 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
     def __init__(self, coordinator, password, partition):
         """Initialize the sensor."""
         super().__init__(coordinator)
+        self.status = None
         self.password = password
         self.partition = partition
-        # O estado agora é gerenciado pela propriedade 'state'
+        self._is_on = False
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update the stored value on coordinator updates."""
-        # O self.status foi removido pois os dados vêm de self.coordinator.data
+        self.status = self.coordinator.data
+        
+        # Simple debug logging - only on first update or when status changes
+        if self.status and "partitions" in self.status:
+            partitions = self.status["partitions"]
+            if self.partition in partitions:
+                partition_data = partitions[self.partition]
+                if not hasattr(self, '_last_armed_state'):
+                    self._last_armed_state = None
+                
+                current_armed = partition_data.get('armed', False)
+                if self._last_armed_state != current_armed:
+                    LOGGER.info(f"Partition {self.partition} armed state changed: {self._last_armed_state} → {current_armed}")
+                    self._last_armed_state = current_armed
+            else:
+                LOGGER.warning(f"Partition {self.partition} not found in payload data")
+        
         self.async_write_ha_state()
 
     @property
@@ -76,33 +126,33 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         return f"amt8000.partition_{self.partition}"
 
     @property
-    def state(self) -> AlarmControlPanelState | None:
+    def state(self) -> str:
         """Return the state of the entity."""
-        if self.coordinator.data is None:
-            return None # Retorna None para o estado ser 'unknown'
-
-        status = self.coordinator.data
+        if self.status is None:
+            return "unknown"
 
         # Check for triggered state first
-        if status.get('siren', False):
-            return AlarmControlPanelState.TRIGGERED
+        if self.status.get('siren', False):
+            return "triggered"
 
         # Get partition-specific state from coordinator data
-        partitions = status.get("partitions", {})
+        partitions = self.status.get("partitions", {})
         partition_data = partitions.get(self.partition, {})
         
         if partition_data.get("armed", False):
+            self._is_on = True
             if partition_data.get("stay", False):
-                return AlarmControlPanelState.ARMED_HOME
+                return "armed_home"
             else:
-                return AlarmControlPanelState.ARMED_AWAY
+                return "armed_away"
         else:
-            return AlarmControlPanelState.DISARMED
+            self._is_on = False
+            return "disarmed"
 
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        return self.coordinator.last_update_success and self.coordinator.data is not None
+        return self.coordinator.last_update_success and self.status is not None
 
     def _arm_away_command(self, client):
         """Arm partition in away mode command function"""
@@ -132,6 +182,15 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
             return "triggered"
         return result
 
+    def alarm_disarm(self, code=None) -> None:
+        """Send disarm command."""
+        # Use coordinator's command execution
+        import asyncio
+        asyncio.create_task(self.coordinator.async_execute_command(
+            self._disarm_command,
+            f"disarm partition {self.partition}"
+        ))
+
     async def async_alarm_disarm(self, code=None) -> None:
         """Send disarm command."""
         await self.coordinator.async_execute_command(
@@ -139,12 +198,29 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
             f"disarm partition {self.partition}"
         )
 
+    def alarm_arm_away(self, code=None) -> None:
+        """Send arm away command."""
+        # Use coordinator's command execution
+        import asyncio
+        asyncio.create_task(self.coordinator.async_execute_command(
+            self._arm_away_command,
+            f"arm away partition {self.partition}"
+        ))
+
     async def async_alarm_arm_away(self, code=None) -> None:
         """Send arm away command."""
         await self.coordinator.async_execute_command(
             self._arm_away_command,
             f"arm away partition {self.partition}"
         )
+
+    def alarm_trigger(self, code=None) -> None:
+        """Send alarm trigger command."""
+        import asyncio
+        asyncio.create_task(self.coordinator.async_execute_command(
+            self._trigger_alarm_command,
+            f"trigger alarm partition {self.partition}"
+        ))
 
     async def async_alarm_trigger(self, code=None) -> None:
         """Send alarm trigger command."""
@@ -154,13 +230,46 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         )
 
     @property
+    def is_on(self) -> bool | None:
+        """Return True if entity is on."""
+        return self._is_on
+
+    def turn_on(self, **kwargs: Any) -> None:
+        import asyncio
+        asyncio.create_task(self.coordinator.async_execute_command(
+            self._arm_away_command,
+            f"turn on partition {self.partition}"
+        ))
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the entity on."""
+        await self.coordinator.async_execute_command(
+            self._arm_away_command,
+            f"turn on partition {self.partition}"
+        )
+
+    def turn_off(self, **kwargs: Any) -> None:
+        """Turn the entity off."""
+        import asyncio
+        asyncio.create_task(self.coordinator.async_execute_command(
+            self._disarm_command,
+            f"turn off partition {self.partition}"
+        ))
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the entity off."""
+        await self.coordinator.async_execute_command(
+            self._disarm_command,
+            f"turn off partition {self.partition}"
+        )
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
-        if self.coordinator.data is None:
+        if self.status is None:
             return {"partition_number": self.partition}
         
-        status = self.coordinator.data
-        partitions = status.get("partitions", {})
+        partitions = self.status.get("partitions", {})
         partition_data = partitions.get(self.partition, {})
         
         return {
