@@ -5,8 +5,11 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DOMAIN
+from .coordinator import AmtCoordinator
+from .isec2.client import Client as ISecClient, CommunicationError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -17,11 +20,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up AMT-8000 from a config entry."""
 
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = entry.data
+    
+    # Get host, port, and password from the config entry
+    host = entry.data["host"]
+    port = entry.data["port"]
+    password = entry.data["password"]
+    
+    # Get update interval from options or data, with a default
+    update_interval = entry.options.get("update_interval", entry.data.get("update_interval", 4))
+
+    # Create the client and coordinator
+    isec_client = ISecClient(host, port)
+    coordinator = AmtCoordinator(hass, isec_client, password, update_interval)
+
+    # Perform the first refresh to ensure the connection is valid
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except CommunicationError as err:
+        # If the first connection fails, raise ConfigEntryNotReady to let HA retry later
+        raise ConfigEntryNotReady(f"Failed to connect to AMT-8000 at {host}:{port}: {err}") from err
+
+    # Store the coordinator and entry data in hass.data
+    hass.data[DOMAIN][entry.entry_id] = {
+        "coordinator": coordinator,
+        "config": entry.data,
+    }
 
     # Set up options listener
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 
+    # Forward the setup to all platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
@@ -37,23 +65,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     LOGGER.info(f"Starting unload process for entry {entry.entry_id}")
     
-    # Force cleanup of coordinator before unloading platforms
-    coordinator_key = f"{DOMAIN}_coordinator_{entry.entry_id}"
-    if coordinator_key in hass.data:
-        coordinator = hass.data[coordinator_key]
+    # Get the coordinator from hass.data
+    coordinator = hass.data[DOMAIN].get(entry.entry_id, {}).get("coordinator")
+
+    # Unload all platforms
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    
+    # Perform coordinator cleanup after platforms are unloaded
+    if coordinator:
         LOGGER.info("Performing coordinator cleanup...")
         try:
             await coordinator.async_cleanup()
         except Exception as e:
             LOGGER.error(f"Error during coordinator cleanup: {e}")
-        
-        # Remove coordinator from hass.data
-        hass.data.pop(coordinator_key, None)
-        LOGGER.info("Coordinator removed from hass.data")
 
-    # Unload all platforms
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    
     if unload_ok:
         # Remove entry data only after successful unload
         hass.data[DOMAIN].pop(entry.entry_id, None)
