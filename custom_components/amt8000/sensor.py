@@ -25,17 +25,56 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the zone sensors for amt-8000."""
-    # CORREÇÃO: Usar o coordinator criado no __init__.py
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
+    LOGGER.debug(f"=== SENSOR SETUP START ===")
+    LOGGER.debug(f"Entry ID: {config_entry.entry_id}")
+    LOGGER.debug(f"DOMAIN: {DOMAIN}")
     
-    LOGGER.info('Setting up 61 zone sensors (zones 1-61)...')
-    
-    # Create 61 zone entities (1-61)
-    zones = []
-    for zone in range(1, 62):
-        zones.append(AmtZoneSensor(coordinator, zone))
-    
-    async_add_entities(zones)
+    try:
+        # Verificar se hass.data[DOMAIN] existe
+        if DOMAIN not in hass.data:
+            LOGGER.error(f"DOMAIN {DOMAIN} não encontrado em hass.data!")
+            LOGGER.debug(f"hass.data keys: {list(hass.data.keys())}")
+            return
+        
+        LOGGER.debug(f"hass.data[{DOMAIN}] keys: {list(hass.data[DOMAIN].keys())}")
+        
+        # Verificar se o entry_id existe
+        if config_entry.entry_id not in hass.data[DOMAIN]:
+            LOGGER.error(f"Entry ID {config_entry.entry_id} não encontrado em hass.data[{DOMAIN}]!")
+            return
+        
+        entry_data = hass.data[DOMAIN][config_entry.entry_id]
+        LOGGER.debug(f"Entry data keys: {list(entry_data.keys())}")
+        
+        # Verificar se coordinator existe
+        if "coordinator" not in entry_data:
+            LOGGER.error(f"Coordinator não encontrado em entry data!")
+            return
+            
+        coordinator = entry_data["coordinator"]
+        LOGGER.debug(f"Coordinator found: {type(coordinator)}")
+        LOGGER.debug(f"Coordinator data: {coordinator.data}")
+        
+        LOGGER.info('Setting up 61 zone sensors (zones 1-61)...')
+        
+        # Create 61 zone entities (1-61)
+        zones = []
+        for zone in range(1, 62):
+            LOGGER.debug(f"Creating zone sensor {zone}")
+            zones.append(AmtZoneSensor(coordinator, zone))
+        
+        LOGGER.debug(f"Created {len(zones)} zone sensors")
+        LOGGER.debug("Calling async_add_entities...")
+        
+        async_add_entities(zones)
+        
+        LOGGER.info(f"Successfully added {len(zones)} zone sensors!")
+        LOGGER.debug(f"=== SENSOR SETUP END ===")
+        
+    except Exception as e:
+        LOGGER.error(f"ERRO NO SETUP DE SENSORS: {e}")
+        LOGGER.exception("Stack trace completo:")
+        raise
 
 
 class AmtZoneSensor(CoordinatorEntity, SensorEntity):
@@ -43,10 +82,12 @@ class AmtZoneSensor(CoordinatorEntity, SensorEntity):
 
     def __init__(self, coordinator, zone_number):
         """Initialize the zone sensor."""
+        LOGGER.debug(f"Initializing zone sensor {zone_number}")
         super().__init__(coordinator)
         self.zone_number = zone_number
         self.status = None
         self._attr_device_class = "motion"
+        LOGGER.debug(f"Zone sensor {zone_number} initialized")
 
     @callback
     def _handle_coordinator_update(self) -> None:
