@@ -1,7 +1,10 @@
 """Module for amt-8000 communication."""
 
 import socket
+import struct
+import logging
 
+LOGGER = logging.getLogger(__name__)
 timeout = 2  # Set the timeout to 2 seconds
 
 dst_id = [0x00, 0x00]
@@ -36,8 +39,8 @@ def build_status(data):
     length = merge_octets(data[4:6]) - 2
     payload = data[8 : 8 + length]
 
-    if len(payload) != 143:
-        raise ValueError(f"Invalid payload length: {len(payload)}, expected 143")
+    if len(payload) < 143:
+        raise ValueError(f"Invalid payload length: {len(payload)}, expected at least 143")
 
     model = "AMT-8000" if payload[0] == 1 else "Unknown"
 
@@ -187,6 +190,34 @@ class Client:
         self.software_version = software_version
         self.client = None
 
+    def _read_data(self) -> bytearray:
+        """Read data from the socket, handling fragmented TCP packets."""
+        # First, read the header to determine the expected length
+        header = self.client.recv(6)
+        if len(header) < 6:
+            raise CommunicationError("Failed to read message header.")
+
+        # Length is at bytes 4 and 5
+        expected_len = struct.unpack('!H', header[4:6])[0]
+        # Total message size = header (8 bytes) + payload (expected_len) + checksum (1 byte)
+        # Note: The length field in the protocol seems to include the command (2 bytes)
+        total_len = 8 + expected_len
+
+        buffer = bytearray(header)
+        
+        # Read the rest of the message
+        bytes_to_read = total_len - len(buffer)
+        
+        while bytes_to_read > 0:
+            packet = self.client.recv(bytes_to_read)
+            if not packet:
+                # Connection broken before receiving all data
+                raise CommunicationError("Connection broken while receiving data.")
+            buffer.extend(packet)
+            bytes_to_read -= len(packet)
+            
+        return buffer
+
     def close(self):
         """Close a connection aggressively."""
         if self.client is None:
@@ -214,14 +245,7 @@ class Client:
         except:
             pass  # Ignore any errors during the entire close process
         finally:
-            # Always try to detach and set to None
-            try:
-                if hasattr(self.client, 'detach'):
-                    self.client.detach()
-            except:
-                pass  # Ignore errors during detach
-            finally:
-                self.client = None
+            self.client = None
 
     def connect(self):
         """Create a new connection."""
@@ -270,11 +294,7 @@ class Client:
 
         self.client.send(payload)
 
-        return_data = bytearray()
-
-        data = self.client.recv(1024)
-
-        return_data.extend(data)
+        return_data = self._read_data()
 
         result = return_data[8:9][0]
 
@@ -300,11 +320,9 @@ class Client:
         cs = calculate_checksum(status_data)
         payload = bytes(status_data + [cs])
 
-        return_data = bytearray()
         self.client.send(payload)
 
-        data = self.client.recv(1024)
-        return_data.extend(data)
+        return_data = self._read_data()
 
         status = build_status(return_data)
         return status
@@ -322,11 +340,9 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        return_data = bytearray()
         self.client.send(payload)
 
-        data = self.client.recv(1024)
-        return_data.extend(data)
+        return_data = self._read_data()
 
         if return_data[8] == 0x91:
             return 'armed'
@@ -346,11 +362,9 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        return_data = bytearray()
         self.client.send(payload)
-
-        data = self.client.recv(1024)
-        return_data.extend(data)
+        
+        return_data = self._read_data()
 
         if return_data[8] == 0x91:
             return 'disarmed'
@@ -367,11 +381,9 @@ class Client:
         cs = calculate_checksum(arm_data)
         payload = bytes(arm_data + [cs])
 
-        return_data = bytearray()
         self.client.send(payload)
 
-        data = self.client.recv(1024)
-        return_data.extend(data)
+        return_data = self._read_data()
 
         if return_data[7] == 0xfe:
             return 'triggered'
