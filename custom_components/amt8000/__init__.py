@@ -18,6 +18,10 @@ PLATFORMS: list[str] = ["alarm_control_panel", "sensor", "binary_sensor"]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up AMT-8000 from a config entry."""
+    LOGGER.debug(f"=== INIT SETUP START ===")
+    LOGGER.debug(f"Entry ID: {entry.entry_id}")
+    LOGGER.debug(f"Entry data: {entry.data}")
+    LOGGER.debug(f"Platforms to setup: {PLATFORMS}")
 
     hass.data.setdefault(DOMAIN, {})
     
@@ -29,15 +33,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Get update interval from options or data, with a default
     update_interval = entry.options.get("update_interval", entry.data.get("update_interval", 4))
 
+    LOGGER.debug(f"Host: {host}, Port: {port}, Update interval: {update_interval}")
+
     # Create the client and coordinator
     isec_client = ISecClient(host, port)
     coordinator = AmtCoordinator(hass, isec_client, password, update_interval)
 
+    LOGGER.debug("Coordinator created, performing first refresh...")
+
     # Perform the first refresh to ensure the connection is valid
     try:
         await coordinator.async_config_entry_first_refresh()
+        LOGGER.debug("First refresh successful")
     except CommunicationError as err:
         # If the first connection fails, raise ConfigEntryNotReady to let HA retry later
+        LOGGER.error(f"Failed to connect to AMT-8000 at {host}:{port}: {err}")
         raise ConfigEntryNotReady(f"Failed to connect to AMT-8000 at {host}:{port}: {err}") from err
 
     # Store the coordinator and entry data in hass.data
@@ -46,12 +56,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "config": entry.data,
     }
 
+    LOGGER.debug(f"Data stored in hass.data[{DOMAIN}][{entry.entry_id}]")
+    LOGGER.debug(f"hass.data[{DOMAIN}] keys after storage: {list(hass.data[DOMAIN].keys())}")
+
     # Set up options listener
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 
-    # Forward the setup to all platforms
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    LOGGER.debug("Starting platform setup...")
 
+    # Forward the setup to all platforms
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        LOGGER.info(f"Successfully set up all platforms: {PLATFORMS}")
+    except Exception as e:
+        LOGGER.error(f"Erro durante setup das plataformas: {e}")
+        LOGGER.exception("Stack trace completo:")
+        raise
+
+    LOGGER.debug(f"=== INIT SETUP END ===")
     return True
 
 
