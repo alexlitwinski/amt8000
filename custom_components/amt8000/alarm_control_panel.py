@@ -6,24 +6,18 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.components.alarm_control_panel import (
-    AlarmControlPanelEntity, 
-    AlarmControlPanelEntityFeature,
-    AlarmControlPanelState
-)
+from homeassistant.components.alarm_control_panel import AlarmControlPanelEntity, AlarmControlPanelEntityFeature
 
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
 )
 
+
 from .const import DOMAIN
 from .coordinator import AmtCoordinator
-from .isec2.client import Client as ISecClient
+
 
 LOGGER = logging.getLogger(__name__)
-
-PARALLEL_UPDATES = 0
-SCAN_INTERVAL = timedelta(seconds=4)
 
 
 async def async_setup_entry(
@@ -32,51 +26,18 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the entries for amt-8000."""
-    data = hass.data[DOMAIN][config_entry.entry_id]
-    
-    # Force cleanup and recreation of coordinator to ensure fresh state
-    coordinator_key = f"{DOMAIN}_coordinator_{config_entry.entry_id}"
-    
-    # If coordinator exists, clean it up first
-    if coordinator_key in hass.data:
-        LOGGER.info("Found existing coordinator, performing cleanup before recreation")
-        old_coordinator = hass.data[coordinator_key]
-        try:
-            await old_coordinator.async_cleanup()
-        except Exception as e:
-            LOGGER.warning(f"Error cleaning up old coordinator: {e}")
-        # Remove from hass.data
-        hass.data.pop(coordinator_key, None)
-    
-    LOGGER.info("Creating fresh coordinator for alarm control panels")
-    isec_client = ISecClient(data["host"], data["port"])
-    # Get update interval from config or options, default to 4 seconds if not present
-    update_interval = data.get("update_interval", 4)
-    if config_entry.options:
-        update_interval = config_entry.options.get("update_interval", update_interval)
-    coordinator = AmtCoordinator(hass, isec_client, data["password"], update_interval)
-    
-    try:
-        await coordinator.async_config_entry_first_refresh()
-        hass.data[coordinator_key] = coordinator
-        LOGGER.info("Fresh coordinator created and initialized successfully")
-    except Exception as e:
-        LOGGER.error(f"Failed to initialize fresh coordinator: {e}")
-        # Try to cleanup the failed coordinator
-        try:
-            await coordinator.async_cleanup()
-        except:
-            pass
-        raise
+    # Retrieve the coordinator from hass.data
+    coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
+    password = hass.data[DOMAIN][config_entry.entry_id]["config"]["password"]
     
     LOGGER.info('Setting up 5 alarm control panels (partitions 1-5)...')
     
     # Create 5 partition entities (1-5)
     panels = []
     for partition in range(1, 6):
-        panels.append(AmtAlarmPanel(coordinator, data['password'], partition))
+        panels.append(AmtAlarmPanel(coordinator, password, partition))
     
-    async_add_entities(panels, True)  # Add update_before_add=True
+    async_add_entities(panels)
 
 
 class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
@@ -128,14 +89,14 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         return f"amt8000.partition_{self.partition}"
 
     @property
-    def alarm_state(self) -> AlarmControlPanelState:
-        """Return the alarm state using the new API."""
+    def state(self) -> str:
+        """Return the state of the entity."""
         if self.status is None:
-            return AlarmControlPanelState.UNKNOWN
+            return "unknown"
 
         # Check for triggered state first
         if self.status.get('siren', False):
-            return AlarmControlPanelState.TRIGGERED
+            return "triggered"
 
         # Get partition-specific state from coordinator data
         partitions = self.status.get("partitions", {})
@@ -144,30 +105,12 @@ class AmtAlarmPanel(CoordinatorEntity, AlarmControlPanelEntity):
         if partition_data.get("armed", False):
             self._is_on = True
             if partition_data.get("stay", False):
-                return AlarmControlPanelState.ARMED_HOME
+                return "armed_home"
             else:
-                return AlarmControlPanelState.ARMED_AWAY
+                return "armed_away"
         else:
             self._is_on = False
-            return AlarmControlPanelState.DISARMED
-
-    @property
-    def state(self) -> str:
-        """Return the state of the entity for backward compatibility."""
-        # Map the new enum to string for backward compatibility
-        alarm_state = self.alarm_state
-        if alarm_state == AlarmControlPanelState.UNKNOWN:
-            return "unknown"
-        elif alarm_state == AlarmControlPanelState.TRIGGERED:
-            return "triggered"
-        elif alarm_state == AlarmControlPanelState.ARMED_HOME:
-            return "armed_home"
-        elif alarm_state == AlarmControlPanelState.ARMED_AWAY:
-            return "armed_away"
-        elif alarm_state == AlarmControlPanelState.DISARMED:
             return "disarmed"
-        else:
-            return "unknown"
 
     @property
     def available(self) -> bool:
